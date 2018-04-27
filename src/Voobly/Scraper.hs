@@ -294,7 +294,7 @@ doUpdateMatchIds :: AppM ()
 doUpdateMatchIds = do
   db <- query' GetDB
   let allMatchIds = VB.concat (map playerMatchIds $ IxSet.toList (_dbPlayers db))
-      updatedMap = foldr (insertDefaultHMIfAbsent False) (_dbMatchIds db) $ VB.toList allMatchIds
+      updatedMap = foldr (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ VB.toList allMatchIds
   update' $ UpdateMatchIds updatedMap
 
 
@@ -362,10 +362,27 @@ extractPlayerMatchIds expectTen t = do
 scrapeMatches :: AppM ()
 scrapeMatches = do
   doUpdateMatchIds
+  matchIds <- query' GetMatchIds
+  let matchIdsToUpdate = HM.filter (== MatchFetchStatusUntried) matchIds
+  void $ mapM scrapeMatch $ HM.keys matchIdsToUpdate
   return ()
 
+matchPageUrl :: MatchId -> Text
+matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToText mid)
 
+scrapeMatch :: MatchId -> AppM ()
+scrapeMatch mid = do
+  t <- makeTextRequest $ matchPageUrl mid
+  date <- extractMatchDate t
+  logDebug $ displayShow $ matchPageUrl mid
+  logDebug $ displayShow date
+  return ()
 
+extractMatchDate :: Text -> AppM UTCTime
+extractMatchDate t =
+ case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Date Played:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
+  [x] -> parseTimeM True defaultTimeLocale "%e %B %Y - %l:%M %P" x
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one date string for match date"
 
 type LadderRow = (Text, PlayerId, Int, Int, Int)
 

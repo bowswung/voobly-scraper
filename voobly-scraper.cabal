@@ -32,7 +32,8 @@ library
     html-parse,
     containers,
     cassava,
-    regex-posix
+    regex-posix,
+    hashable
 
   hs-source-dirs:      src
   ghc-options:         -Wall

@@ -15,11 +15,12 @@ import Control.Monad.State
 import qualified Control.Lens as L
 import qualified Data.IxSet.Typed as IxSet
 import qualified RIO.HashMap as HM
+import Data.Hashable
 
 newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
 newtype Team = Team Int deriving (Eq, Ord, Show)
 newtype CivilisationId = CivilisationId Int deriving (Eq, Ord, Show)
-newtype MatchId = MatchId Int deriving (Eq, Ord, Show, Hashable)
+newtype MatchId = MatchId {matchIdToText :: Int} deriving (Eq, Ord, Show, Hashable)
 
 
 
@@ -78,6 +79,16 @@ data PlayerLadderProgress = PlayerLadderProgress {
 } deriving (Eq, Ord, Show)
 
 
+data MatchFetchStatus =
+    MatchFetchStatusUntried
+  | MatchFetchStatusComplete
+  | MatchFetchStatusUnsupportedLadder Text
+  deriving (Eq, Ord, Show)
+
+instance Hashable MatchFetchStatus where
+  hash = hash.show
+  hashWithSalt i a = hashWithSalt i (show a)
+
 defaultPlayerLadderProgress :: Ladder -> PlayerLadderProgress
 defaultPlayerLadderProgress l = PlayerLadderProgress l Nothing Nothing
 
@@ -99,7 +110,7 @@ data DB = DB {
 , _dbCivilisations :: CivilisationSet
 , _dbMatches :: MatchSet
 , _dbPlayerLadderProgress :: PlayerLadderProgressSet
-, _dbMatchIds :: HM.HashMap MatchId Bool
+, _dbMatchIds :: HM.HashMap MatchId MatchFetchStatus
 }
 
 L.makeLenses ''DB
@@ -148,10 +159,10 @@ getPlayerLadderProgress pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbPlay
 updatePlayerLadderProgress :: PlayerLadderProgress -> Update DB ()
 updatePlayerLadderProgress a = modify (over dbPlayerLadderProgress (IxSet.updateIx (playerLadderProgressLadder a) a))
 
-updateMatchIds :: (HM.HashMap MatchId Bool) -> Update DB ()
+updateMatchIds :: (HM.HashMap MatchId MatchFetchStatus) -> Update DB ()
 updateMatchIds cookies = modify (L.set dbMatchIds cookies)
 
-getMatchIds :: Query DB (HM.HashMap MatchId Bool)
+getMatchIds :: Query DB (HM.HashMap MatchId MatchFetchStatus)
 getMatchIds = L.view dbMatchIds <$> ask
 
 
@@ -173,6 +184,7 @@ $(deriveSafeCopy 0 'base ''Civilisation)
 $(deriveSafeCopy 0 'base ''MatchPlayer)
 $(deriveSafeCopy 0 'base ''MatchId)
 $(deriveSafeCopy 0 'base ''PlayerLadderProgress)
+$(deriveSafeCopy 0 'base ''MatchFetchStatus)
 
 $(makeAcidic ''DB [
   'updateDB,
