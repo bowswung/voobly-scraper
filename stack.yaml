@@ -5,3 +5,4 @@ packages:
 
 extra-deps:
 - rio-0.1.1.0
+- acid-state-0.14.3

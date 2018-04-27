@@ -14,13 +14,18 @@ cabal-version:       >= 1.24
 library
   exposed-modules:
     Voobly.Scraper
+    Voobly.DB
 
   build-depends:
     rio,
     http-client,
+    http-types,
     http-client-tls,
     optparse-applicative,
-    mtl
+    mtl,
+    acid-state,
+    safecopy,
+    lens
 
   hs-source-dirs:      src
   ghc-options:         -Wall
