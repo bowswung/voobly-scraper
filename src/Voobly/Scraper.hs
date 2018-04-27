@@ -285,11 +285,11 @@ extractMatchCount t = do
 
 extractPlayerMatchIds :: Text -> AppM [Int]
 extractPlayerMatchIds t = do
-  let r = Regex.mkRegex "<td bgcolor=\"#[^\"]+\" style=\"\"><a href=\"https:\/\/voobly\.com\/match\/view\/17649526\">#([0-9]+)<\/a><\/td>"
+  let r = Regex.mkRegex "<td bgcolor=\"#[^\"]+\" style=\"\"><a href=\"https:\\/\\/voobly\\.com\\/match\\/view\\/17649526\">#([0-9]+)<\\/a><\\/td>"
   case Regex.matchRegex r (T.unpack t) of
     Just xs ->
       if length xs > 0 && length xs < 11
-        then runParserFromText $ T.pack x
+        then map runParserFromText $ map T.pack xs
         else throwM $ AppErrorInvalidHtml "Expected between 1 and 10 match ids"
     _ -> throwM $ AppErrorInvalidHtml "Expected regex to match exactly one numeric value in extractMatchCount"
 
