@@ -373,16 +373,35 @@ matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToTex
 scrapeMatch :: MatchId -> AppM ()
 scrapeMatch mid = do
   t <- makeTextRequest $ matchPageUrl mid
-  date <- extractMatchDate t
-  logDebug $ displayShow $ matchPageUrl mid
-  logDebug $ displayShow date
-  return ()
+  ladder <- extractMatchLadder t
+  case ladder of
+    Left l ->
+      logDebug $ "Unsupported ladder" <> displayShow l
+    Right l -> do
+      date <- extractMatchDate t
+      logDebug $ displayShow $ matchPageUrl mid
+      logDebug $ displayShow date
+      logDebug $ displayShow l
+      return ()
+
+extractMatchLadder :: Text -> AppM (Either Text Ladder)
+extractMatchLadder t =
+ case doRegexJustCaptureGroups (T.unpack t) "Ladder: <a href=\"[^\"]+\">([^<]+)</a>" of
+  [x] ->
+    case x of
+      "RM - 1v1" -> pure $ Right LadderRm
+      "RM - Team Games" -> pure $ Right LadderRmTeam
+      _ -> pure $ Left (T.pack x)
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one string for ladder"
+
+
 
 extractMatchDate :: Text -> AppM UTCTime
 extractMatchDate t =
  case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Date Played:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
   [x] -> parseTimeM True defaultTimeLocale "%e %B %Y - %l:%M %P" x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one date string for match date"
+
 
 type LadderRow = (Text, PlayerId, Int, Int, Int)
 
