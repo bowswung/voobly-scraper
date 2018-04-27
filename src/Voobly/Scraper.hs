@@ -6,8 +6,11 @@ import Voobly.DB
 import RIO
 import qualified RIO.ByteString.Lazy as BL
 import qualified RIO.Text as T
-import qualified RIO.Vector as V
+import qualified RIO.Vector.Boxed as VB
+
 import RIO.Time
+import qualified RIO.HashMap as HM
+
 import Data.Acid
 import Data.Tree
 import Data.Acid.Local
@@ -124,6 +127,7 @@ runScraper = do
             logInfo $ "*** Scraping ladder " <> displayShow LadderRm <> " ***"
             scrapeLadder LadderRm
             scrapePlayers
+            scrapeMatches
           CommandQuery -> do
             db <- query' GetDB
             logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
@@ -238,11 +242,31 @@ scrapeLadder l = do
 
 scrapePlayers :: AppM ()
 scrapePlayers = do
-  db <- query' GetDB
-  now <- getCurrentTime
-  let weekago = addUTCTime (-3600 * 24 * 7) now
-  let playersToUpdate = IxSet.toList $ IxSet.getLT (Just weekago) $ _dbPlayers db
-  void $ mapM scrapePlayer playersToUpdate
+  skip <- do
+    appEnv <- ask
+    if (debug . appEnvOptions $  appEnv)
+      then do
+        matchIds <- query' GetMatchIds
+        if HM.size matchIds > 1000
+          then do
+            logDebug $ "Skipping scrapePlayers for --debug because we have " <> displayShow (HM.size matchIds) <> " match ids already"
+            return True
+          else return False
+      else return False
+  if skip
+    then return ()
+    else do
+      db <- query' GetDB
+      now <- getCurrentTime
+      let weekago = addUTCTime (-3600 * 24 * 7) now
+      let playersToUpdateBase = IxSet.toList $ IxSet.getLT (Just weekago) $ _dbPlayers db
+      appEnv <- ask
+      playersToUpdate <- if (debug . appEnvOptions $  appEnv)
+        then do
+          logDebug $ "Restricting player scraping to first 20 playesr for --debug"
+          return $ take 20 playersToUpdateBase
+        else return playersToUpdateBase
+      void $ mapM scrapePlayer playersToUpdate
 
 
 playerMatchUrl :: Player -> Int -> Text
@@ -255,7 +279,7 @@ scrapePlayer :: Player -> AppM ()
 scrapePlayer p = do
   r <- makeTextRequest $ playerMatchUrl p 0
   totalMatches <- extractMatchCount r
-  let matchesMissing = totalMatches - (V.length $ playerMatchIds p)
+  let matchesMissing = totalMatches - (VB.length $ playerMatchIds p)
       pagesToRequest = ceiling $ matchesMissing `divInt` 10
   if pagesToRequest < 1
     then do
@@ -264,6 +288,23 @@ scrapePlayer p = do
     else do
       let pages = reverse [1 .. pagesToRequest]
       void $ mapM (scrapePlayerPage p pagesToRequest) pages
+      doUpdateMatchIds
+
+doUpdateMatchIds :: AppM ()
+doUpdateMatchIds = do
+  db <- query' GetDB
+  let allMatchIds = VB.concat (map playerMatchIds $ IxSet.toList (_dbPlayers db))
+      updatedMap = foldr (insertDefaultHMIfAbsent False) (_dbMatchIds db) $ VB.toList allMatchIds
+  update' $ UpdateMatchIds updatedMap
+
+
+
+insertDefaultHMIfAbsent :: (Eq a, Hashable a) => b -> a -> HM.HashMap a b -> HM.HashMap a b
+insertDefaultHMIfAbsent b a m =
+  case HM.lookup a m of
+    Nothing -> HM.insert a b m
+    Just _ -> m
+
 
 
 scrapePlayerPage :: Player -> Int -> Int -> AppM ()
@@ -281,10 +322,12 @@ scrapePlayerPage p highestPage page  = do
       update' $ UpdatePlayer freshP{playerLastCompletedUpdate = newDate, playerMatchIds = foldr insertIfAbsent (playerMatchIds freshP) matchIds}
 
 
+
+
 insertIfAbsent :: (Eq a) => a -> Vector a -> Vector a
 insertIfAbsent a v =
-  if a `V.notElem` v
-    then V.cons a v
+  if a `VB.notElem` v
+    then VB.cons a v
     else v
 
 
@@ -316,13 +359,21 @@ extractPlayerMatchIds expectTen t = do
 
 
 
+scrapeMatches :: AppM ()
+scrapeMatches = do
+  doUpdateMatchIds
+  return ()
+
+
+
+
 type LadderRow = (Text, PlayerId, Int, Int, Int)
 
 
 
 updatePlayerLadders :: Ladder -> LadderRow -> AppM ()
 updatePlayerLadders l (name, pid, rating, wins, loss) = do
-  let p = Player pid name V.empty Nothing
+  let p = Player pid name VB.empty Nothing
   update' $ UpdatePlayer p
   let pl = PlayerLadder{
              playerLadderPlayerId = pid

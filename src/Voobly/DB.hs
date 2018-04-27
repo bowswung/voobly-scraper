@@ -14,12 +14,12 @@ import Network.HTTP.Client
 import Control.Monad.State
 import qualified Control.Lens as L
 import qualified Data.IxSet.Typed as IxSet
-
+import qualified RIO.HashMap as HM
 
 newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
 newtype Team = Team Int deriving (Eq, Ord, Show)
 newtype CivilisationId = CivilisationId Int deriving (Eq, Ord, Show)
-newtype MatchId = MatchId Int deriving (Eq, Ord, Show)
+newtype MatchId = MatchId Int deriving (Eq, Ord, Show, Hashable)
 
 
 
@@ -99,6 +99,7 @@ data DB = DB {
 , _dbCivilisations :: CivilisationSet
 , _dbMatches :: MatchSet
 , _dbPlayerLadderProgress :: PlayerLadderProgressSet
+, _dbMatchIds :: HM.HashMap MatchId Bool
 }
 
 L.makeLenses ''DB
@@ -112,6 +113,7 @@ emptyDb = DB {
 , _dbCivilisations = IxSet.empty
 , _dbMatches = IxSet.empty
 , _dbPlayerLadderProgress = IxSet.empty
+, _dbMatchIds = HM.empty
 }
 
 updateDB :: DB -> Update DB ()
@@ -146,6 +148,17 @@ getPlayerLadderProgress pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbPlay
 updatePlayerLadderProgress :: PlayerLadderProgress -> Update DB ()
 updatePlayerLadderProgress a = modify (over dbPlayerLadderProgress (IxSet.updateIx (playerLadderProgressLadder a) a))
 
+updateMatchIds :: (HM.HashMap MatchId Bool) -> Update DB ()
+updateMatchIds cookies = modify (L.set dbMatchIds cookies)
+
+getMatchIds :: Query DB (HM.HashMap MatchId Bool)
+getMatchIds = L.view dbMatchIds <$> ask
+
+
+instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
+  getCopy = contain $ fmap HM.fromList safeGet
+  putCopy = contain . safePut . HM.toList
+
 
 $(deriveSafeCopy 0 'base ''Cookie)
 $(deriveSafeCopy 0 'base ''DB)
@@ -172,6 +185,8 @@ $(makeAcidic ''DB [
   , 'updatePlayerLadder
   , 'getPlayerLadderProgress
   , 'updatePlayerLadderProgress
+  , 'getMatchIds
+  , 'updateMatchIds
   ])
 
 
