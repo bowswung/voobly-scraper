@@ -25,12 +25,12 @@ import qualified RIO.List.Partial as Partial
 import qualified RIO.List as L
 
 import qualified Data.IxSet.Typed as IxSet
-import qualified  Text.Regex as Regex
-
+import Text.Regex.Posix ((=~))
 data AppError =
     AppErrorCouldntLogIn Text
   | AppErrorInvalidHtml Text
   | AppErrorParserError Text
+  | AppErrorNotFound Text
   deriving (Show, Typeable)
 
 instance Exception AppError
@@ -259,39 +259,59 @@ scrapePlayer p = do
       pagesToRequest = ceiling $ matchesMissing `divInt` 10
   if pagesToRequest < 1
     then do
-      logDebug $ "no new matches for player " <> displayShow p
+      logDebug $ "no new matches for player " <> (displayShow $ playerId p)
       return ()
     else do
       let pages = reverse [1 .. pagesToRequest]
-      void $ mapM (scrapePlayerPage p) pages
+      void $ mapM (scrapePlayerPage p pagesToRequest) pages
 
 
-scrapePlayerPage :: Player -> Int -> AppM ()
-scrapePlayerPage p page = do
-  r <- makeTextRequest $ playerMatchUrl p 0
-  matchIds <- extractPlayerMatchIds r
-  logDebug $ displayShow matchIds
+scrapePlayerPage :: Player -> Int -> Int -> AppM ()
+scrapePlayerPage p highestPage page  = do
+  logDebug $ "Scraping player " <> (displayShow $ playerId p) <> ": page " <> displayShow page
+  r <- makeTextRequest $ playerMatchUrl p (page - 1)
+  matchIds <- fmap (map MatchId) $ extractPlayerMatchIds (page < highestPage) r
+  mFreshP <- query' $ GetPlayer (playerId p)
+  case mFreshP of
+    Nothing -> throwM $ AppErrorNotFound $ "Could not find player for id" <> (utf8BuilderToText . displayShow $ playerId p)
+    Just freshP -> do
+      newDate <- if page == 1
+                   then fmap Just getCurrentTime
+                   else pure $ playerLastCompletedUpdate freshP
+      update' $ UpdatePlayer freshP{playerLastCompletedUpdate = newDate, playerMatchIds = foldr insertIfAbsent (playerMatchIds freshP) matchIds}
+
+
+insertIfAbsent :: (Eq a) => a -> Vector a -> Vector a
+insertIfAbsent a v =
+  if a `V.notElem` v
+    then V.cons a v
+    else v
+
 
 extractMatchCount :: Text -> AppM Int
-extractMatchCount t = do
-  let r = Regex.mkRegex "<div class=\"count\">Displaying [0-9]+ - [0-9]+ out of ([0-9]+) matches"
-  case Regex.matchRegex r (T.unpack t) of
-    Just [x] -> runParserFromText $ T.pack x
-    _ -> throwM $ AppErrorInvalidHtml "Expected regex to match exactly one numeric value in extractMatchCount"
+extractMatchCount t =
+  case doRegexJustCaptureGroups (T.unpack t)  "<div class=\"count\">Displaying [0-9]+ - [0-9]+ out of ([0-9]+) matches" of
+    [x] -> runParserFromText $ T.pack x
+    x -> throwM $ AppErrorInvalidHtml $ "Expected regex to match exactly one numeric value in extractMatchCount, got " <> (utf8BuilderToText . displayShow $ x)
 
 
 
+doRegex :: String -> String -> [[String]]
+doRegex a b = a =~ b
+
+doRegexJustCaptureGroups :: String -> String -> [String]
+doRegexJustCaptureGroups a b = concat $ map (drop 1) (doRegex a b)
 
 
-extractPlayerMatchIds :: Text -> AppM [Int]
-extractPlayerMatchIds t = do
-  let r = Regex.mkRegex "<td bgcolor=\"#[^\"]+\" style=\"\"><a href=\"https:\\/\\/voobly\\.com\\/match\\/view\\/17649526\">#([0-9]+)<\\/a><\\/td>"
-  case Regex.matchRegex r (T.unpack t) of
-    Just xs ->
-      if length xs > 0 && length xs < 11
-        then map runParserFromText $ map T.pack xs
-        else throwM $ AppErrorInvalidHtml "Expected between 1 and 10 match ids"
-    _ -> throwM $ AppErrorInvalidHtml "Expected regex to match exactly one numeric value in extractMatchCount"
+extractPlayerMatchIds :: Bool -> Text -> AppM [Int]
+extractPlayerMatchIds expectTen t = do
+  case doRegexJustCaptureGroups (T.unpack t) "<td bgcolor=\"[^\"]*\" style=\"[^\"]*\"><a href=\"https://voobly.com/match/view/[0-9]+\">#([0-9]+)</a></td>" of
+    xs -> do
+      if (not expectTen && (length xs < 1 || length xs > 11)) || (expectTen && not (length xs == 10))
+        then if expectTen
+          then throwM $ AppErrorInvalidHtml "Expected between exactly 10 match ids"
+          else throwM $ AppErrorInvalidHtml "Expected between exactly 1 and 10 match ids"
+        else mapM runParserFromText $ map T.pack xs
 
 
 
