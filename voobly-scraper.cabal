@@ -34,7 +34,8 @@ library
     cassava,
     regex-posix,
     hashable,
-    hScraper
+    process,
+    safe
 
   hs-source-dirs:      src
   ghc-options:         -Wall

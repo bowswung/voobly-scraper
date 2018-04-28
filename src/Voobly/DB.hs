@@ -7,6 +7,7 @@ module Voobly.DB where
 
 import RIO
 import RIO.Time
+import qualified RIO.Text as T
 import Voobly.TH
 import Data.Acid
 import Data.SafeCopy
@@ -22,6 +23,44 @@ newtype Team = Team Int deriving (Eq, Ord, Show)
 newtype CivilisationId = CivilisationId Int deriving (Eq, Ord, Show)
 newtype MatchId = MatchId {matchIdToText :: Int} deriving (Eq, Ord, Show, Hashable)
 
+defaultCivs :: [Civilisation]
+defaultCivs = map (\(a,b) -> Civilisation (CivilisationId a) b) $ filter (\x -> (T.length . snd $ x) > 0) defaultCivTups
+
+defaultCivTups :: [(Int, Text)]
+defaultCivTups = [
+    (1, "Britons")
+  , (2, "Franks")
+  , (3, "Goths")
+  , (4, "Teutons")
+  , (5, "Japanese")
+  , (6, "Chinese")
+  , (7, "Byzantines")
+  , (8, "Persians")
+  , (9, "Saracens")
+  , (10, "Turks")
+  , (11, "Vikings")
+  , (12, "Mongols")
+  , (13, "Celts")
+  , (14, "Spanish")
+  , (15, "Aztecs")
+  , (16, "Mayans")
+  , (17, "Huns")
+  , (18, "Koreans")
+  , (19, "Italians")
+  , (20, "Indians")
+  , (21, "Incas")
+  , (22, "Magyars")
+  , (23, "Slavs")
+  , (24, "Portuguese")
+  , (25, "Ethiopian")
+  , (26, "Malian")
+  , (27, "Berbers")
+  , (28, "Khmer")
+  , (29, "Malay")
+  , (30, "Burmese")
+  , (31, "Vietnamese")
+  , (46, "VooblyCivError")
+  ]
 
 
 data Player = Player {
@@ -72,7 +111,7 @@ data MatchPlayer = MatchPlayer {
   matchPlayerPostRating :: Int,
   matchPlayerTeam :: Team,
   matchPlayerWon :: Bool
-} deriving (Eq, Ord, Show)
+} | MatchPlayerError Text deriving (Eq, Ord, Show)
 
 data PlayerLadderProgress = PlayerLadderProgress {
   playerLadderProgressLadder :: Ladder
@@ -85,6 +124,7 @@ data MatchFetchStatus =
     MatchFetchStatusUntried
   | MatchFetchStatusComplete
   | MatchFetchStatusUnsupportedLadder Text
+  | MatchFetchStatusMissingPlayer UTCTime
   deriving (Eq, Ord, Show)
 
 instance Hashable MatchFetchStatus where
@@ -123,7 +163,7 @@ emptyDb = DB {
   _dbCookies = []
 , _dbPlayers = IxSet.empty
 , _dbPlayerLadders = IxSet.empty
-, _dbCivilisations = IxSet.empty
+, _dbCivilisations = IxSet.fromList defaultCivs
 , _dbMatches = IxSet.empty
 , _dbPlayerLadderProgress = IxSet.empty
 , _dbMatchIds = HM.empty
@@ -171,6 +211,14 @@ getMatchIds = L.view dbMatchIds <$> ask
 updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
 updateMatchId a b = modify (over dbMatchIds (\m -> HM.insert a b m))
 
+getCivilisation :: CivilisationId -> Query DB (Maybe Civilisation)
+getCivilisation pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbCivilisations <$> ask
+
+updateCivilisation :: Civilisation -> Update DB ()
+updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisationId a) a))
+
+updateMatch :: Match -> Update DB ()
+updateMatch a = modify (over dbMatches (IxSet.updateIx (matchId a) a))
 
 instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
   getCopy = contain $ fmap HM.fromList safeGet
@@ -206,6 +254,9 @@ $(makeAcidic ''DB [
   , 'getMatchIds
   , 'updateMatchIds
   , 'updateMatchId
+  , 'getCivilisation
+  , 'updateMatch
+  , 'updateCivilisation
   ])
 
 

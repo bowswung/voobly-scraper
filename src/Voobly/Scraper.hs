@@ -9,6 +9,8 @@ import qualified RIO.Text as T
 import qualified RIO.Text.Lazy as TL
 import qualified RIO.Vector.Boxed as VB
 
+import qualified System.Process as SP
+
 import RIO.Time
 import qualified RIO.HashMap as HM
 
@@ -25,16 +27,19 @@ import qualified Text.HTML.Parser       as P
 import qualified Text.HTML.Tree       as P
 import qualified Data.Csv as Csv
 
-import qualified RIO.List.Partial as Partial
 import qualified RIO.List as L
 
 import qualified Data.IxSet.Typed as IxSet
 import Text.Regex.Posix ((=~))
+import qualified Safe as Safe
+
 data AppError =
     AppErrorCouldntLogIn Text
   | AppErrorInvalidHtml Text
   | AppErrorParserError Text
   | AppErrorNotFound Text
+  | AppErrorCommandFailure Text
+  | AppErrorMissingCiv Text
   deriving (Show, Typeable)
 
 instance Exception AppError
@@ -233,7 +238,7 @@ scrapeLadder l = do
               update' $ UpdatePlayerLadderProgress (startProgress{playerLadderProgressLastPageHandled = Nothing, playerLadderProgressLastCompleted = Just now})
             else do
               void $ mapM (updatePlayerLadders l) tups
-              logInfo $ "Page " <> displayShow p <> " processed successfully with " <> (displayShow $ length tups) <> " players (e.g." <> displayShow (Partial.head tups)
+              logInfo $ "Page " <> displayShow p <> " processed successfully with " <> (displayShow $ length tups) <> " players (e.g." <> displayShow (Safe.headMay tups)
               update' $ UpdatePlayerLadderProgress (startProgress{playerLadderProgressLastPageHandled = Just p})
               scrapeLadder l
         else do
@@ -373,6 +378,8 @@ matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToTex
 
 scrapeMatch :: MatchId -> AppM ()
 scrapeMatch mid = do
+  logDebug $ "Scraping match " <> (displayShow . matchPageUrl $ mid)
+
   t <- makeTextRequest $ matchPageUrl mid
   ladder <- extractMatchLadder t
   case ladder of
@@ -385,11 +392,33 @@ scrapeMatch mid = do
       mapName <- extractMatchMap t
       mapNumberOfPlayers <- extractMatchNumberOfPlayers t
       matchMods <- extractMatchMods t
-      players <- extractMapPlayers t
-      logDebug $ displayShow $ (matchPageUrl mid, l, date, duration, mapName, mapNumberOfPlayers, matchMods)
-      logDebug $ displayShow $ players
+      (winningTeam, players) <- extractMapPlayers mapNumberOfPlayers t
+      let match = Match {
+              matchId = mid
+            , matchDate = date
+            , matchDuration = duration
+            , matchLadder = l
+            , matchMap = mapName
+            , matchMods = matchMods
+            , matchPlayers = players
+            , matchWinner = winningTeam
+        }
+      knownPlayers <- (flip mapM) players $ \p -> do
+        fmap isJust $ query' $ GetPlayer $ matchPlayerPlayerId p
+      if and knownPlayers
+        then do
 
-      return ()
+          logDebug $ "Inserted match with id " <> displayShow mid
+          update' $ UpdateMatch match
+          update' $ UpdateMatchId mid MatchFetchStatusComplete
+          return ()
+
+        else do
+          now <- getCurrentTime
+          update' $ UpdateMatchId mid (MatchFetchStatusMissingPlayer now)
+          logWarn $ "Missing player in match " <> displayShow mid
+
+
 
 extractMatchLadder :: Text -> AppM (Either Text Ladder)
 extractMatchLadder t =
@@ -434,32 +463,155 @@ extractMatchMods t =
   [x] -> return $ map T.strip $ T.split (== '|') . T.pack $ x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match mods"
 
-extractMapPlayers :: Text -> AppM [MatchPlayer]
-extractMapPlayers t = do
-  (_winT, _loseT) <- findPlayerTables t
-  return []
+extractMapPlayers :: Int -> Text -> AppM (Team, [MatchPlayer])
+extractMapPlayers expected t = do
+  (winT, loseT) <- findPlayerTables t
+  let psFound = length winT + length loseT
+  if  psFound == expected
+    then do
+      winners <- mapM (extractMatchPlayer True) winT
+      losers <- mapM (extractMatchPlayer False) loseT
+      case L.nub $ map matchPlayerTeam winners of
+        [x] -> return (x, winners ++ losers)
+        xs -> throwM $ AppErrorInvalidHtml $  "Expected to find exactly one winning team but got" <> (utf8BuilderToText . displayShow $ xs)
+    else throwM $ AppErrorInvalidHtml $  "Expected to find exactly " <> (utf8BuilderToText . displayShow $ expected) <> " player tables, but found " <> (utf8BuilderToText . displayShow $ psFound)
 
+treeToText :: Tree P.Token -> Text
+treeToText = T.filter (/= '\n') .  TL.toStrict . P.renderTokens . P.tokensFromTree
+
+isErrorComputerOrDeletedPlayer :: Tree P.Token -> AppM Bool
+isErrorComputerOrDeletedPlayer t =
+  case Safe.lastMay $ extractFromTree t (isTagOpen "a") of
+    Nothing -> pure $ not . null $ doRegexJustCaptureGroups (T.unpack . treeToText $ t) "(Computer)"
+    Just _ -> pure False
+
+extractMatchPlayer :: Bool -> Tree P.Token -> AppM MatchPlayer
+extractMatchPlayer isWinner t = do
+  pNameTree <- playerNameTree
+  isErr <- isErrorComputerOrDeletedPlayer pNameTree
+  if isErr
+    then pure $ MatchPlayerError (treeToText pNameTree)
+    else do
+      (_, playerId) <- extractNameAndIdFromToken pNameTree
+      civId <- extractCivFromTree
+      (oldRating, newRating, team) <- extractPlayerMatchRating
+
+      return MatchPlayer {
+          matchPlayerPlayerId = playerId
+        , matchPlayerCiv = civId
+        , matchPlayerPreRating = oldRating
+        , matchPlayerPostRating = newRating
+        , matchPlayerTeam = team
+        , matchPlayerWon = isWinner
+        }
+
+  where
+
+    extractPlayerMatchRating :: AppM (Int, Int, Team)
+    extractPlayerMatchRating = do
+      debugHtmlToFile t
+      let reg =
+            if isWinner
+              then "New Rating: <b>([0-9]+)</b>Points: <b><span style=\"[^\"]*\">([0-9]+)</span></b> Team:<b>([0-9]+)</b>"
+              else "Team: <b>([0-9]+)</b> Points:<b><span style=\"[^\"]*\">-([0-9]+)</span></b> New Rating:<b>([0-9]+)</b>"
+          normalise = if isWinner then id else reverse
+      case normalise $ doRegexJustCaptureGroups (T.unpack . T.filter (/= '\n') . TL.toStrict . P.renderTokens . P.tokensFromTree $ t) reg of
+        newRatingS:pointsChangeS:teamS:[] -> do
+          newRating <- runParserFromText $ T.pack newRatingS
+          pointsChange <- runParserFromText $ T.pack pointsChangeS
+          teamI <- runParserFromText $ T.pack teamS
+          let oldRating =
+                if isWinner
+                  then newRating - pointsChange
+                  else newRating + pointsChange
+          return (oldRating, newRating, Team teamI)
+
+
+        xs -> throwM $ AppErrorInvalidHtml $  "Expected to find three capture groups in extractPlayerMatchRating, but got " <> (utf8BuilderToText . displayShow $ xs) <> " with regex: " <> (utf8BuilderToText . displayShow $ reg)
+
+
+
+
+    playerNameTree :: AppM (Tree P.Token)
+    playerNameTree =
+      case extractFromTree t isPlayerNameTree of
+        [x] -> return x
+        _ -> throwM $ AppErrorInvalidHtml $  "Expected to find one player name td in extractMatchPlayer"
+    isPlayerNameTree :: P.Token -> Bool
+    isPlayerNameTree (P.TagOpen tag attrs) =
+      let w = fromMaybe "" $ findAttributeValue "valign" attrs
+          cp = fromMaybe "" $ findAttributeValue "align" attrs
+      in tag == "td" && w == "bottom" && (cp == "right" || cp == "") && length attrs `elem` [1,2]
+    isPlayerNameTree _ = False
+    extractCivFromTree :: AppM CivilisationId
+    extractCivFromTree = do
+      case P.tokensFromForest $ extractFromTree t isCivImg of
+        [P.TagSelfClose _ attrs] -> do
+          let src = fromMaybe "" $ findAttributeValue "src" attrs
+          case doRegexJustCaptureGroups (T.unpack src) "res/games/AOC/civs/([0-9]+)" of
+            [civIdS] -> do
+              civId <- fmap CivilisationId $ runParserFromText $ T.pack civIdS
+
+              civ <- query' $ GetCivilisation civId
+              case civ of
+                Nothing ->
+                  case L.find (\x -> civilisationId x == civId) defaultCivs of
+                    Nothing -> throwM $ AppErrorMissingCiv $  "Civ not present in database or default list: " <> (utf8BuilderToText . displayShow $ civId)
+                    Just c -> do
+                      update' $ UpdateCivilisation c
+                      return $ civId
+                Just _ -> return civId
+
+            _ -> throwM $ AppErrorInvalidHtml $  "Expected to find civ img int with regex in extractMatchPlayer"
+        _ -> throwM $ AppErrorInvalidHtml $  "Expected to find civ img in extractMatchPlayer"
+
+
+    isCivImg  :: P.Token -> Bool
+    isCivImg (P.TagSelfClose tagName attrs) =
+      let src = fromMaybe "" $ findAttributeValue "src" attrs
+      in tagName == "img" && length (doRegex (T.unpack src) "res/games/AOC/civs") > 0
+    isCivImg _ = False
 findPlayerTables :: Text -> AppM ([Tree P.Token], [Tree P.Token])
 findPlayerTables t = do
   mainTable <- extractMainPlayerTable t
-  logDebug $ displayShow mainTable
-  return ([],[])
+
+  (winnerTable, loserTable) <- extractWinnerLoserTables mainTable
+
+  winnerTables <- extractPlayerTables winnerTable
+  loserTables <- extractPlayerTables loserTable
+  return (winnerTables, loserTables)
+  where
+    extractWinnerLoserTables :: Tree P.Token -> AppM (Tree P.Token, Tree P.Token)
+    extractWinnerLoserTables tr =
+      case extractFromTree tr isWlTable of
+        w:l:[] -> return (w, l)
+        _ -> throwM $ AppErrorInvalidHtml $  "Expected to find one winner and one loser table"
+    isWlTable :: P.Token -> Bool
+    isWlTable (P.TagOpen tag attrs) =
+      let w = fromMaybe "" $ findAttributeValue "valign" attrs
+          cp = fromMaybe "" $ findAttributeValue "width" attrs
+      in tag == "td" && w == "top" && cp == "50%" && length attrs == 2
+    isWlTable _ = False
+    extractPlayerTables :: Tree P.Token -> AppM [Tree P.Token]
+    extractPlayerTables = pure . subForest -- there should only be the player tables at this point
 
 
 extractMainPlayerTable :: Text -> AppM (Tree P.Token)
-extractMainPlayerTable t = do
+extractMainPlayerTable baseT = do
+  t <- fmap (T.filter (/= '\n')) $ htmlTidy baseT
+
   let tokens = P.canonicalizeTokens $ P.parseTokens t
-  body <- extractBody tokens
-  case extractFromTree body isMainPlayerTable  of
+  forest <- tokensToForestM tokens
+  case extractFromForest forest isMainPlayerTable  of
     [x] -> return x
-    _ -> throwM $ AppErrorInvalidHtml "Expected to find one main player table"
+    xs -> throwM $ AppErrorInvalidHtml $  "Expected to find one main player table" <> (utf8BuilderToText . displayShow $ xs)
 
   where
     isMainPlayerTable :: P.Token -> Bool
     isMainPlayerTable (P.TagOpen tag attrs) =
       let w = fromMaybe "" $ findAttributeValue "width" attrs
           cp = fromMaybe "" $ findAttributeValue "cellpadding" attrs
-      in tag == "table" && w == "100%" && cp == "0"
+      in tag == "table" && w == "100%" && cp == "0" && length attrs == 2
     isMainPlayerTable _ = False
 
 type LadderRow = (Text, PlayerId, Int, Int, Int)
@@ -499,18 +651,23 @@ extractIntFromToken tok =
 
 extractNameAndIdFromToken :: Tree P.Token -> AppM (Text, PlayerId)
 extractNameAndIdFromToken t =
-  case flatten $ Partial.last $ extractFromTree t (isTagOpen "a") of
-    (P.TagOpen _ attrs):(P.ContentText name):[] -> do
 
-      case findAttributeValue "href" attrs of
-        Nothing -> throwM $ AppErrorInvalidHtml "Expected href attribute in extractNameAndIdFromToken"
-        Just href -> do
-          let tId = Partial.last $ T.split (== '/') href
-          return (name, PlayerId . T.strip $ tId)
+  case Safe.lastMay $ extractFromTree t (isTagOpen "a") of
+    Nothing -> throwM $ AppErrorInvalidHtml "Expected at least one a tag in extractNameAndIdFromToken"
+    Just aTree ->
+      case flatten aTree  of
+        (P.TagOpen _ attrs):(P.ContentText name):[] -> do
+
+          case findAttributeValue "href" attrs of
+            Nothing -> throwM $ AppErrorInvalidHtml "Expected href attribute in extractNameAndIdFromToken"
+            Just href -> do
+              case Safe.lastMay $ T.split (== '/') href of
+                Nothing -> throwM $ AppErrorInvalidHtml "Expected multiple parts to url in extractNameAndIdFromToken"
+                Just tId -> return (name, PlayerId . T.strip $ tId)
 
 
 
-    _ -> throwM $ AppErrorInvalidHtml "Expected open tag, contenttext for extractNameAndIdFromToken"
+        _ -> throwM $ AppErrorInvalidHtml "Expected open tag, contenttext for extractNameAndIdFromToken"
 
 
 
@@ -546,6 +703,11 @@ extractFromTree tree@(Node a forest) f =
   let l = if f a then [tree] else []
   in l ++ (concat $ map (\t -> extractFromTree t f) forest)
 
+debugHtmlToFile :: Tree P.Token -> AppM ()
+debugHtmlToFile t =
+    BL.writeFile (runDir <> "/debug.html") $ BL.fromStrict . encodeUtf8 . TL.toStrict . P.renderTokens . P.tokensFromTree $ t
+
+
 makeHTMLTreesRequest :: Text -> AppM ([P.Token])
 makeHTMLTreesRequest u = do
   baseReq <- parseRequest $ T.unpack $ u
@@ -559,38 +721,12 @@ makeTextRequest u = do
   return $ decodeUtf8With lenientDecode (BL.toStrict $ responseBody res)
 
 
-extractBody :: [P.Token] -> AppM (Tree P.Token)
-extractBody ts = do
-  let (_,res) =
-        (flip execState) (False, []) $ mapM collectToken ts
-  BL.writeFile  (runDir <> "/body.html") (BL.fromStrict . encodeUtf8 . TL.toStrict . P.renderTokens $ res)
 
-  case P.tokensToForest res of
-    Left e -> throwM $ AppErrorInvalidHtml $ utf8BuilderToText . displayShow $ e
-    Right [f] -> return f
-    Right _ -> throwM $ AppErrorInvalidHtml "Expected exactly one body tree"
-  where
-    collectToken :: P.Token -> State (Bool, [P.Token]) ()
-    collectToken tok = do
-      (inBody, res) <- get
-      case tok of
-        P.TagOpen t _ -> do
-          let nowInBody = inBody || t == "body"
-          if nowInBody
-            then put (nowInBody, res ++ [tok])
-            else put (nowInBody, res)
-        P.TagClose t  -> do
-          if t == "body"
-            then put (False, res ++ [tok])
-            else
-              if inBody
-                then put (inBody, res ++ [tok])
-                else return ()
-        _ ->
-          if inBody
-            then put (inBody, res ++ [tok])
-            else return ()
-
+tokensToForestM :: [P.Token] -> AppM (Forest P.Token)
+tokensToForestM ts =
+    case P.tokensToForest ts of
+      Left e -> throwM $ AppErrorInvalidHtml $ utf8BuilderToText . displayShow $ e
+      Right a -> return a
 
 extractLadderTable :: [P.Token] -> AppM (Tree P.Token)
 extractLadderTable ts = do
@@ -631,6 +767,13 @@ extractLadderTable ts = do
         _ -> if afterLadder && inTable
               then put (afterLadder, inTable, False, res ++ [tok])
               else return ()
+
+
+htmlTidy :: Text -> AppM Text
+htmlTidy t = do
+  (_exit, out, _err) <- liftIO $ SP.readProcessWithExitCode "tidy" ["--force-output", "yes", "--quiet", "yes"] (T.unpack t)
+  --logDebug $ displayShow (exit, out, err)
+  return $ T.pack out
 
 
 
