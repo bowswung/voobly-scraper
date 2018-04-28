@@ -18,6 +18,7 @@ library
     Voobly.TH
 
   build-depends:
+    base,
     rio,
     http-client,
     http-types,

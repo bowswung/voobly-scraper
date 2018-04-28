@@ -32,7 +32,7 @@ import qualified RIO.List as L
 import qualified Data.IxSet.Typed as IxSet
 import Text.Regex.Posix ((=~))
 import qualified Safe as Safe
-
+import qualified Data.Proxy as Proxy
 data AppError =
     AppErrorCouldntLogIn Text
   | AppErrorInvalidHtml Text
@@ -47,6 +47,7 @@ instance Exception AppError
 data Command =
     CommandRun
   | CommandQuery
+  | CommandDump
 
 data Options = Options
   { username   :: Text
@@ -77,6 +78,7 @@ optionsParser = Options
    <*> subparser (
       ( command "run"          (info (helper <*> pure CommandRun)                 (progDesc "Run the scraper" ))
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
+     <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
       )
     )
 
@@ -132,12 +134,89 @@ runScraper = do
             initialise
             logInfo $ "*** Scraping ladder " <> displayShow LadderRm <> " ***"
             scrapeLadder LadderRm
+            scrapeLadder LadderRmTeam
             scrapePlayers
             scrapeMatches
           CommandQuery -> do
             db <- query' GetDB
             logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
             logDebug $ displayShow $ take 20 (IxSet.toList $ _dbPlayers db)
+
+          CommandDump -> do
+            dumpMatches
+
+
+dumpMatches :: AppM ()
+dumpMatches = do
+  db <- query' GetDB
+  let civMap = HM.fromList $ (map (\c -> (civilisationId c, Csv.toField . civilisationName $ c))) (IxSet.toList ._dbCivilisations $ db)
+  rendered <- fmap concat $ mapM (renderMatch civMap) $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) (_dbMatches db)
+  logInfo $ "Dumping " <> (displayShow . length $ rendered) <> " match records to csv"
+  let enc = Csv.encodeByNameWith Csv.defaultEncodeOptions headerDef rendered
+  let fname = runDir <> "/matchDump.csv"
+  BL.writeFile fname enc
+  logDebug $ "Matches dumped successfully to " <> (displayShow fname)
+  where
+    headerDef :: Csv.Header
+    headerDef = VB.fromList [
+      "MatchId",
+      "MatchUrl",
+      "MatchDate",
+      "MatchDuration",
+      "MatchLadder",
+      "MatchMap",
+      "MatchMods",
+      "MatchPlayerId",
+      "MatchPlayerName",
+      "MatchPlayerTeam",
+      "MatchPlayerCivId",
+      "MatchPlayerCivName",
+      "MatchPlayerWinner",
+      "MatchPlayerPreRating",
+      "MatchPlayerPostRating"
+      ]
+
+    renderMatch ::HM.HashMap CivilisationId ByteString -> Match -> AppM [Csv.NamedRecord]
+    renderMatch civMap Match{..} = do
+      let matchDetails = [
+              "MatchId" Csv..= matchId,
+              "MatchUrl" Csv..= matchPageUrl matchId,
+              "MatchDate" Csv..= matchDate,
+              "MatchDuration" Csv..= matchDuration,
+              "MatchLadder" Csv..= matchLadder,
+              "MatchMap" Csv..= matchMap,
+              "MatchMods" Csv..= matchMods
+            ]
+
+      (flip mapM) matchPlayers $ \m ->
+        case m of
+          MatchPlayer{..} -> do
+            p <- query' $ GetPlayer matchPlayerPlayerId
+            let pName = fromMaybe "*NameNotFoundInScraperDB*" (fmap playerName p)
+                civName = fromMaybe "*CivNameNotFoundInScraperDB*" $ HM.lookup matchPlayerCiv civMap
+            return $ Csv.namedRecord $ matchDetails ++ [
+                "MatchPlayerId" Csv..= matchPlayerPlayerId,
+                "MatchPlayerName" Csv..= pName,
+                "MatchPlayerTeam" Csv..= matchPlayerTeam,
+                "MatchPlayerCivId" Csv..= matchPlayerCiv,
+                "MatchPlayerCivName" Csv..= civName,
+                "MatchPlayerWinner" Csv..= matchPlayerWon,
+                "MatchPlayerPreRating" Csv..= matchPlayerPreRating,
+                "MatchPlayerPostRating" Csv..= matchPlayerPostRating
+              ]
+
+          MatchPlayerError t -> do
+            let (errorName :: Text) = "*VooblyErrorPlayerNotFound*"
+            return $ Csv.namedRecord $ matchDetails ++ [
+                "MatchPlayerId" Csv..= errorName,
+                "MatchPlayerName" Csv..= t,
+                "MatchPlayerTeam" Csv..= errorName,
+                "MatchPlayerCiv" Csv..= errorName,
+                "MatchPlayerWinner" Csv..= errorName,
+                "MatchPlayerPreRating" Csv..= errorName,
+                "MatchPlayerPostRating" Csv..= errorName
+              ]
+
 
 
 runDir :: FilePath
@@ -374,7 +453,7 @@ scrapeMatches = do
   return ()
 
 matchPageUrl :: MatchId -> Text
-matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToText mid)
+matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToInt mid)
 
 scrapeMatch :: MatchId -> AppM ()
 scrapeMatch mid = do

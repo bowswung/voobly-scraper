@@ -17,11 +17,12 @@ import qualified Control.Lens as L
 import qualified Data.IxSet.Typed as IxSet
 import qualified RIO.HashMap as HM
 import Data.Hashable
+import qualified Data.Csv as Csv
 
 newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
-newtype Team = Team Int deriving (Eq, Ord, Show)
-newtype CivilisationId = CivilisationId Int deriving (Eq, Ord, Show)
-newtype MatchId = MatchId {matchIdToText :: Int} deriving (Eq, Ord, Show, Hashable)
+newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show)
+newtype CivilisationId = CivilisationId {civilisationIdToInt :: Int} deriving (Eq, Ord, Show)
+newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable)
 
 defaultCivs :: [Civilisation]
 defaultCivs = map (\(a,b) -> Civilisation (CivilisationId a) b) $ filter (\x -> (T.length . snd $ x) > 0) defaultCivTups
@@ -131,6 +132,10 @@ instance Hashable MatchFetchStatus where
   hash = hash.show
   hashWithSalt i a = hashWithSalt i (show a)
 
+instance Hashable CivilisationId where
+  hash = hash.show
+  hashWithSalt i a = hashWithSalt i (show a)
+
 defaultPlayerLadderProgress :: Ladder -> PlayerLadderProgress
 defaultPlayerLadderProgress l = PlayerLadderProgress l Nothing Nothing
 
@@ -219,6 +224,41 @@ updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisatio
 
 updateMatch :: Match -> Update DB ()
 updateMatch a = modify (over dbMatches (IxSet.updateIx (matchId a) a))
+
+
+
+
+
+
+
+instance Csv.ToField MatchId where
+  toField = Csv.toField . matchIdToInt
+
+instance Csv.ToField CivilisationId where
+  toField = Csv.toField . civilisationIdToInt
+
+instance Csv.ToField Team where
+  toField = Csv.toField . teamToInt
+
+instance Csv.ToField PlayerId where
+  toField = Csv.toField . playerIdToText
+
+instance Csv.ToField [Text] where
+  toField = Csv.toField . T.intercalate ", "
+
+instance Csv.ToField Ladder where
+  toField LadderRm = Csv.toField $ ("RM - 1v1" :: Text)
+  toField LadderRmTeam = Csv.toField $ ("RM - Team" :: Text)
+
+instance Csv.ToField DiffTime where
+  toField dt = Csv.toField $ ((round  (fromIntegral (diffTimeToPicoseconds dt) / (10^(12 :: Integer) :: Double))) :: Int)
+
+instance Csv.ToField UTCTime where
+  toField dt = Csv.toField $ formatTime defaultTimeLocale rfc822DateFormat dt
+
+instance Csv.ToField Bool where
+  toField True = "1"
+  toField False = "0"
 
 instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
   getCopy = contain $ fmap HM.fromList safeGet
