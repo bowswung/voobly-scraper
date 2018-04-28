@@ -6,6 +6,7 @@ import Voobly.DB
 import RIO
 import qualified RIO.ByteString.Lazy as BL
 import qualified RIO.Text as T
+import qualified RIO.Text.Lazy as TL
 import qualified RIO.Vector.Boxed as VB
 
 import RIO.Time
@@ -363,8 +364,8 @@ scrapeMatches :: AppM ()
 scrapeMatches = do
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = HM.filter (== MatchFetchStatusUntried) matchIds
-  void $ mapM scrapeMatch $ HM.keys matchIdsToUpdate
+  let matchIdsToUpdate =  HM.filter (== MatchFetchStatusUntried) matchIds
+  void $ mapM scrapeMatch $ L.sort $ HM.keys matchIdsToUpdate
   return ()
 
 matchPageUrl :: MatchId -> Text
@@ -375,13 +376,19 @@ scrapeMatch mid = do
   t <- makeTextRequest $ matchPageUrl mid
   ladder <- extractMatchLadder t
   case ladder of
-    Left l ->
+    Left l -> do
+      update' $ UpdateMatchId mid (MatchFetchStatusUnsupportedLadder l)
       logDebug $ "Unsupported ladder" <> displayShow l
     Right l -> do
       date <- extractMatchDate t
-      logDebug $ displayShow $ matchPageUrl mid
-      logDebug $ displayShow date
-      logDebug $ displayShow l
+      duration <- extractMatchDuration t
+      mapName <- extractMatchMap t
+      mapNumberOfPlayers <- extractMatchNumberOfPlayers t
+      matchMods <- extractMatchMods t
+      players <- extractMapPlayers t
+      logDebug $ displayShow $ (matchPageUrl mid, l, date, duration, mapName, mapNumberOfPlayers, matchMods)
+      logDebug $ displayShow $ players
+
       return ()
 
 extractMatchLadder :: Text -> AppM (Either Text Ladder)
@@ -394,18 +401,68 @@ extractMatchLadder t =
       _ -> pure $ Left (T.pack x)
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one string for ladder"
 
-
-
 extractMatchDate :: Text -> AppM UTCTime
 extractMatchDate t =
  case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Date Played:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
   [x] -> parseTimeM True defaultTimeLocale "%e %B %Y - %l:%M %P" x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one date string for match date"
 
+extractMatchDuration :: Text -> AppM DiffTime
+extractMatchDuration t =
+ case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\" bgcolor=\"[^\"]*\">Duration:</td>\n<td style=\"[^\"]*\" bgcolor=\"[^\"]*\">([^<]+)</td>" of
+  [x] -> do
+    tod <- parseTimeM True defaultTimeLocale "%T" x
+    return $ timeOfDayToTime tod
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one time string for match duration"
+
+
+extractMatchMap :: Text -> AppM Text
+extractMatchMap t =
+ case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Map:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
+  [x] -> return $ T.strip . T.pack $ x
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match map"
+
+extractMatchNumberOfPlayers :: Text -> AppM Int
+extractMatchNumberOfPlayers t =
+ case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Players:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
+  [x] -> runParserFromText $ T.pack x
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one int for match number of players"
+
+extractMatchMods :: Text -> AppM [Text]
+extractMatchMods t =
+ case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\" bgcolor=\"[^\"]*\">Game Mod:</td>\n<td style=\"[^\"]*\" bgcolor=\"[^\"]*\">([^<]+)</td>" of
+  [x] -> return $ map T.strip $ T.split (== '|') . T.pack $ x
+  _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match mods"
+
+extractMapPlayers :: Text -> AppM [MatchPlayer]
+extractMapPlayers t = do
+  (_winT, _loseT) <- findPlayerTables t
+  return []
+
+findPlayerTables :: Text -> AppM ([Tree P.Token], [Tree P.Token])
+findPlayerTables t = do
+  mainTable <- extractMainPlayerTable t
+  logDebug $ displayShow mainTable
+  return ([],[])
+
+
+extractMainPlayerTable :: Text -> AppM (Tree P.Token)
+extractMainPlayerTable t = do
+  let tokens = P.canonicalizeTokens $ P.parseTokens t
+  body <- extractBody tokens
+  case extractFromTree body isMainPlayerTable  of
+    [x] -> return x
+    _ -> throwM $ AppErrorInvalidHtml "Expected to find one main player table"
+
+  where
+    isMainPlayerTable :: P.Token -> Bool
+    isMainPlayerTable (P.TagOpen tag attrs) =
+      let w = fromMaybe "" $ findAttributeValue "width" attrs
+          cp = fromMaybe "" $ findAttributeValue "cellpadding" attrs
+      in tag == "table" && w == "100%" && cp == "0"
+    isMainPlayerTable _ = False
 
 type LadderRow = (Text, PlayerId, Int, Int, Int)
-
-
 
 updatePlayerLadders :: Ladder -> LadderRow -> AppM ()
 updatePlayerLadders l (name, pid, rating, wins, loss) = do
@@ -501,6 +558,40 @@ makeTextRequest u = do
   res <- makeRequest baseReq
   return $ decodeUtf8With lenientDecode (BL.toStrict $ responseBody res)
 
+
+extractBody :: [P.Token] -> AppM (Tree P.Token)
+extractBody ts = do
+  let (_,res) =
+        (flip execState) (False, []) $ mapM collectToken ts
+  BL.writeFile  (runDir <> "/body.html") (BL.fromStrict . encodeUtf8 . TL.toStrict . P.renderTokens $ res)
+
+  case P.tokensToForest res of
+    Left e -> throwM $ AppErrorInvalidHtml $ utf8BuilderToText . displayShow $ e
+    Right [f] -> return f
+    Right _ -> throwM $ AppErrorInvalidHtml "Expected exactly one body tree"
+  where
+    collectToken :: P.Token -> State (Bool, [P.Token]) ()
+    collectToken tok = do
+      (inBody, res) <- get
+      case tok of
+        P.TagOpen t _ -> do
+          let nowInBody = inBody || t == "body"
+          if nowInBody
+            then put (nowInBody, res ++ [tok])
+            else put (nowInBody, res)
+        P.TagClose t  -> do
+          if t == "body"
+            then put (False, res ++ [tok])
+            else
+              if inBody
+                then put (inBody, res ++ [tok])
+                else return ()
+        _ ->
+          if inBody
+            then put (inBody, res ++ [tok])
+            else return ()
+
+
 extractLadderTable :: [P.Token] -> AppM (Tree P.Token)
 extractLadderTable ts = do
   let (_,_,_,res) =
@@ -528,6 +619,7 @@ extractLadderTable ts = do
               then put (afterLadder, True, False, res ++ [tok])
               else return ()
         P.TagClose t  -> do
+          -- this is to fix the buggy html
           if inTable && lastTagWasImg && t == "a"
             then put (afterLadder, inTable, False, res)
             else

@@ -33,7 +33,8 @@ library
     containers,
     cassava,
     regex-posix,
-    hashable
+    hashable,
+    hScraper
 
   hs-source-dirs:      src
   ghc-options:         -Wall

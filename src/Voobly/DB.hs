@@ -55,6 +55,7 @@ data Match = Match {
   matchDuration :: DiffTime,
   matchLadder :: Ladder,
   matchMap :: Text,
+  matchMods :: [Text],
   matchPlayers :: [MatchPlayer],
   matchWinner :: Team
 } deriving (Eq, Ord, Show)
@@ -69,7 +70,8 @@ data MatchPlayer = MatchPlayer {
   matchPlayerCiv :: CivilisationId,
   matchPlayerPreRating :: Int,
   matchPlayerPostRating :: Int,
-  matchPlayerTeam :: Team
+  matchPlayerTeam :: Team,
+  matchPlayerWon :: Bool
 } deriving (Eq, Ord, Show)
 
 data PlayerLadderProgress = PlayerLadderProgress {
@@ -160,10 +162,14 @@ updatePlayerLadderProgress :: PlayerLadderProgress -> Update DB ()
 updatePlayerLadderProgress a = modify (over dbPlayerLadderProgress (IxSet.updateIx (playerLadderProgressLadder a) a))
 
 updateMatchIds :: (HM.HashMap MatchId MatchFetchStatus) -> Update DB ()
-updateMatchIds cookies = modify (L.set dbMatchIds cookies)
+updateMatchIds a = modify (L.set dbMatchIds a)
 
 getMatchIds :: Query DB (HM.HashMap MatchId MatchFetchStatus)
 getMatchIds = L.view dbMatchIds <$> ask
+
+
+updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
+updateMatchId a b = modify (over dbMatchIds (\m -> HM.insert a b m))
 
 
 instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
@@ -199,6 +205,7 @@ $(makeAcidic ''DB [
   , 'updatePlayerLadderProgress
   , 'getMatchIds
   , 'updateMatchIds
+  , 'updateMatchId
   ])
 
 
