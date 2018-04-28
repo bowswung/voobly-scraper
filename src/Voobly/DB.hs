@@ -18,6 +18,7 @@ import qualified Data.IxSet.Typed as IxSet
 import qualified RIO.HashMap as HM
 import Data.Hashable
 import qualified Data.Csv as Csv
+import qualified RIO.Vector.Boxed as VB
 
 newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
 newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show)
@@ -196,6 +197,24 @@ getPlayerLadder pid ladder = (IxSet.getOne . IxSet.getEQ pid . IxSet.getEQ ladde
 updatePlayer :: Player -> Update DB ()
 updatePlayer a = modify (over dbPlayers (IxSet.updateIx (playerId a) a))
 
+
+insertIfAbsent :: (Eq a) => a -> Vector a -> Vector a
+insertIfAbsent a v =
+  if a `VB.notElem` v
+    then VB.cons a v
+    else v
+
+addNewMatchIds :: PlayerId -> [MatchId] -> Update DB (Maybe Text)
+addNewMatchIds pid matchIds = do
+  mp <- liftQuery $ getPlayer pid
+  case mp of
+    Nothing -> return $ Just $ "Could not find player with id " <> (T.pack . show $ pid) <> " when updating match ids"
+    Just p -> do
+      let newP = p{playerMatchIds = foldr insertIfAbsent (playerMatchIds p) matchIds}
+      updatePlayer newP
+      return Nothing
+
+
 updatePlayerLadder :: PlayerLadder -> Update DB ()
 updatePlayerLadder a = modify (over dbPlayerLadders (IxSet.updateIx (playerLadderUniqIdx a) a))
 
@@ -206,8 +225,19 @@ getPlayerLadderProgress pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbPlay
 updatePlayerLadderProgress :: PlayerLadderProgress -> Update DB ()
 updatePlayerLadderProgress a = modify (over dbPlayerLadderProgress (IxSet.updateIx (playerLadderProgressLadder a) a))
 
-updateMatchIds :: (HM.HashMap MatchId MatchFetchStatus) -> Update DB ()
-updateMatchIds a = modify (L.set dbMatchIds a)
+insertDefaultHMIfAbsent :: (Eq a, Hashable a) => b -> a -> HM.HashMap a b -> HM.HashMap a b
+insertDefaultHMIfAbsent b a m =
+  case HM.lookup a m of
+    Nothing -> HM.insert a b m
+    Just _ -> m
+
+
+updateMatchIds ::  Update DB ()
+updateMatchIds = do
+  db <- get
+  let allMatchIds = VB.concat (map playerMatchIds $ IxSet.toList (_dbPlayers db))
+      updatedMap = foldr (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ VB.toList allMatchIds
+  modify (L.set dbMatchIds updatedMap)
 
 getMatchIds :: Query DB (HM.HashMap MatchId MatchFetchStatus)
 getMatchIds = L.view dbMatchIds <$> ask
@@ -297,6 +327,7 @@ $(makeAcidic ''DB [
   , 'getCivilisation
   , 'updateMatch
   , 'updateCivilisation
+  , 'addNewMatchIds
   ])
 
 

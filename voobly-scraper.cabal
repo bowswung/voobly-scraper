@@ -36,7 +36,9 @@ library
     regex-posix,
     hashable,
     process,
-    safe
+    safe,
+    async,
+    async-extra
 
   hs-source-dirs:      src
   ghc-options:         -Wall

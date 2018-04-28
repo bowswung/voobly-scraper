@@ -33,6 +33,7 @@ import qualified Data.IxSet.Typed as IxSet
 import Text.Regex.Posix ((=~))
 import qualified Safe as Safe
 import qualified Data.Proxy as Proxy
+import Control.Concurrent.Async.Extra
 data AppError =
     AppErrorCouldntLogIn Text
   | AppErrorInvalidHtml Text
@@ -40,6 +41,7 @@ data AppError =
   | AppErrorNotFound Text
   | AppErrorCommandFailure Text
   | AppErrorMissingCiv Text
+  | AppErrorDBError Text
   deriving (Show, Typeable)
 
 instance Exception AppError
@@ -52,6 +54,7 @@ data Command =
 data Options = Options
   { username   :: Text
   , password   :: Text
+  , threadCount :: Int
   , debug :: Bool
   , runCommand :: Command
   }
@@ -70,6 +73,12 @@ optionsParser = Options
     <> short 'p'
     <> help "Voobly password"
     <> value ""
+    )
+  <*> option auto (
+       long "threads"
+    <> short 't'
+    <> help "Number of threads to use"
+    <> value 1
     )
   <*> switch (
        long "debug"
@@ -115,9 +124,25 @@ withAcid = bracket openState closeState
     openState = openLocalStateFrom acidDir emptyDb
 
     closeState :: AcidState DB -> IO ()
-    closeState acid = liftIO $ createCheckpointAndClose acid
+    closeState acid = do
+      liftIO $ createArchive acid
+      liftIO $ createCheckpointAndClose acid
 
 
+runStack :: AppEnv -> AppState -> AppM a -> IO a
+runStack appEnv appState f = runRIO appEnv $ runAppM appState f
+
+stackToIO :: AppM a -> AppM (IO a)
+stackToIO a = do
+  appEnv <- ask
+  appState <- get
+  return $ runStack appEnv appState a
+
+stackToIO' :: (a -> AppM b) -> AppM (a -> IO b)
+stackToIO' f = do
+  appEnv <- ask
+  appState <- get
+  return $ \a -> runStack appEnv appState (f a)
 runScraper :: IO ()
 runScraper = do
   options <- execParser optionsParserInfo
@@ -128,11 +153,10 @@ runScraper = do
     withAcid $ \acid -> do
       let appEnv = AppEnv lf options acid
           appState = AppState manager
-      runRIO appEnv $ runAppM appState $ do
+      runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
             initialise
-            logInfo $ "*** Scraping ladder " <> displayShow LadderRm <> " ***"
             scrapeLadder LadderRm
             scrapeLadder LadderRmTeam
             scrapePlayers
@@ -282,6 +306,7 @@ ladderPageUrl l p = vooblyUrl <> "/ladder/ranking/" <> T.pack (show $ ladderId l
 
 scrapeLadder :: Ladder -> AppM ()
 scrapeLadder l = do
+  logInfo $ "*** Scraping ladder " <> displayShow l <> " ***"
   skip <- do
     appEnv <- ask
     if (debug . appEnvOptions $  appEnv)
@@ -327,6 +352,8 @@ scrapeLadder l = do
 
 scrapePlayers :: AppM ()
 scrapePlayers = do
+  logInfo $ "*** Scraping player match ids ***"
+
   skip <- do
     appEnv <- ask
     if (debug . appEnvOptions $  appEnv)
@@ -344,15 +371,25 @@ scrapePlayers = do
       db <- query' GetDB
       now <- getCurrentTime
       let weekago = addUTCTime (-3600 * 24 * 7) now
-      let playersToUpdateBase = IxSet.toList $ IxSet.getLT (Just weekago) $ _dbPlayers db
+      let playersToUpdateBase = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just weekago) $ _dbPlayers db
+          totalPlayers = IxSet.size $ _dbPlayers db
       appEnv <- ask
       playersToUpdate <- if (debug . appEnvOptions $  appEnv)
         then do
-          logDebug $ "Restricting player scraping to first 20 playesr for --debug"
+          logDebug $ "Restricting player scraping to first 20 players for --debug"
           return $ take 20 playersToUpdateBase
         else return playersToUpdateBase
-      void $ mapM scrapePlayer playersToUpdate
+      logInfo $ "*** " <> (displayShow totalPlayers) <> " players in the DB and " <> (displayShow $ length playersToUpdate) <> " players need to be scraped ***"
 
+      void $ withThreads scrapePlayer playersToUpdate
+
+withThreads :: (a -> AppM b) -> [a] -> AppM [b]
+withThreads act t = do
+  appEnv <- ask
+  ioAct <- stackToIO' act
+  logInfo $ "*** Launching action with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
+
+  liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioAct t
 
 playerMatchUrl :: Player -> Int -> Text
 playerMatchUrl p page = vooblyUrl <> "/profile/view/" <> (playerIdToText . playerId $ p) <> "/Matches/games/matches/user/" <> (playerIdToText . playerId $ p) <> "/0/" <> T.pack (show page)
@@ -363,11 +400,16 @@ divInt = (/) `on` fromIntegral
 scrapePlayer :: Player -> AppM ()
 scrapePlayer p = do
   r <- makeTextRequest $ playerMatchUrl p 0
+  logDebug $ "Looking for player games " <> (displayShow $ playerId p) <> " at " <> (displayShow $ playerMatchUrl p 0)
+
   totalMatches <- extractMatchCount r
   let matchesMissing = totalMatches - (VB.length $ playerMatchIds p)
       pagesToRequest = ceiling $ matchesMissing `divInt` 10
   if pagesToRequest < 1
     then do
+      now <- getCurrentTime
+      when (totalMatches < 1) (update' $ UpdatePlayer p{playerLastCompletedUpdate = Just now})
+
       logDebug $ "no new matches for player " <> (displayShow $ playerId p)
       return ()
     else do
@@ -377,18 +419,11 @@ scrapePlayer p = do
 
 doUpdateMatchIds :: AppM ()
 doUpdateMatchIds = do
-  db <- query' GetDB
-  let allMatchIds = VB.concat (map playerMatchIds $ IxSet.toList (_dbPlayers db))
-      updatedMap = foldr (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ VB.toList allMatchIds
-  update' $ UpdateMatchIds updatedMap
+  update' $ UpdateMatchIds
 
 
 
-insertDefaultHMIfAbsent :: (Eq a, Hashable a) => b -> a -> HM.HashMap a b -> HM.HashMap a b
-insertDefaultHMIfAbsent b a m =
-  case HM.lookup a m of
-    Nothing -> HM.insert a b m
-    Just _ -> m
+
 
 
 
@@ -397,30 +432,51 @@ scrapePlayerPage p highestPage page  = do
   logDebug $ "Scraping player " <> (displayShow $ playerId p) <> ": page " <> displayShow page
   r <- makeTextRequest $ playerMatchUrl p (page - 1)
   matchIds <- fmap (map MatchId) $ extractPlayerMatchIds (page < highestPage) r
-  mFreshP <- query' $ GetPlayer (playerId p)
-  case mFreshP of
-    Nothing -> throwM $ AppErrorNotFound $ "Could not find player for id" <> (utf8BuilderToText . displayShow $ playerId p)
-    Just freshP -> do
-      newDate <- if page == 1
-                   then fmap Just getCurrentTime
-                   else pure $ playerLastCompletedUpdate freshP
-      update' $ UpdatePlayer freshP{playerLastCompletedUpdate = newDate, playerMatchIds = foldr insertIfAbsent (playerMatchIds freshP) matchIds}
+  res <- update' $ AddNewMatchIds (playerId p) matchIds
+  case res of
+    Just err -> throwM $ AppErrorDBError err
+    Nothing -> do
+      when (page == 1) $ do
+        mFreshP <- query' $ GetPlayer (playerId p)
+        case mFreshP of
+          Nothing -> throwM $ AppErrorNotFound $ "Could not find player for id" <> (utf8BuilderToText . displayShow $ playerId p)
+          Just freshP -> do
+            now <- getCurrentTime
+            update' $ UpdatePlayer freshP{playerLastCompletedUpdate = Just now}
 
 
 
 
-insertIfAbsent :: (Eq a) => a -> Vector a -> Vector a
-insertIfAbsent a v =
-  if a `VB.notElem` v
-    then VB.cons a v
-    else v
+
+
 
 
 extractMatchCount :: Text -> AppM Int
-extractMatchCount t =
+extractMatchCount t = do
   case doRegexJustCaptureGroups (T.unpack t)  "<div class=\"count\">Displaying [0-9]+ - [0-9]+ out of ([0-9]+) matches" of
     [x] -> runParserFromText $ T.pack x
+    [] ->
+      if not . null $ doRegex (T.unpack t) "<div class=\"count\">No matches found</div>"
+        then return 0
+        else
+          case doRegexJustCaptureGroups (T.unpack t)  "<div class=\"count\">Found ([a-zA-Z]+) match[a-z]*</div>" of
+            [strNum] -> strNumToInt strNum
+
+            _ -> throwM $ AppErrorInvalidHtml $ "Expected to find either numeric or number string or no matches found in extractMatchCount"
     x -> throwM $ AppErrorInvalidHtml $ "Expected regex to match exactly one numeric value in extractMatchCount, got " <> (utf8BuilderToText . displayShow $ x)
+
+strNumToInt :: String -> AppM Int
+strNumToInt "one" = pure 1
+strNumToInt "two" = pure 1
+strNumToInt "three" = pure 1
+strNumToInt "four" = pure 1
+strNumToInt "five" = pure 1
+strNumToInt "six" = pure 1
+strNumToInt "seven" = pure 1
+strNumToInt "eight" = pure 1
+strNumToInt "nine" = pure 1
+strNumToInt "ten" = pure 1
+strNumToInt a = throwM  $ AppErrorInvalidHtml $ "Could not convert " <> (utf8BuilderToText . displayShow $ a) <> " to int in strNumToInt from extractMatchCount"
 
 
 
@@ -446,11 +502,16 @@ extractPlayerMatchIds expectTen t = do
 
 scrapeMatches :: AppM ()
 scrapeMatches = do
+  logInfo $ "*** Scraping matches ***"
+
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate =  HM.filter (== MatchFetchStatusUntried) matchIds
-  void $ mapM scrapeMatch $ L.sort $ HM.keys matchIdsToUpdate
-  return ()
+  let matchIdsToUpdate = L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
+
+  logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ length matchIdsToUpdate) <> " matches need to be scraped ***"
+
+  void $ withThreads scrapeMatch matchIdsToUpdate
+
 
 matchPageUrl :: MatchId -> Text
 matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToInt mid)
@@ -588,7 +649,6 @@ extractMatchPlayer isWinner t = do
 
     extractPlayerMatchRating :: AppM (Int, Int, Team)
     extractPlayerMatchRating = do
-      debugHtmlToFile t
       let reg =
             if isWinner
               then "New Rating: <b>([0-9]+)</b>Points: <b><span style=\"[^\"]*\">([0-9]+)</span></b> Team:<b>([0-9]+)</b>"
@@ -729,12 +789,11 @@ extractIntFromToken tok =
     _ -> throwM $ AppErrorInvalidHtml "Expected one contenttext token for extracting an Int"
 
 extractNameAndIdFromToken :: Tree P.Token -> AppM (Text, PlayerId)
-extractNameAndIdFromToken t =
-
+extractNameAndIdFromToken t = do
   case Safe.lastMay $ extractFromTree t (isTagOpen "a") of
     Nothing -> throwM $ AppErrorInvalidHtml "Expected at least one a tag in extractNameAndIdFromToken"
     Just aTree ->
-      case flatten aTree  of
+      case flatten $ replaceSpanWithContentText aTree  of
         (P.TagOpen _ attrs):(P.ContentText name):[] -> do
 
           case findAttributeValue "href" attrs of
@@ -747,7 +806,12 @@ extractNameAndIdFromToken t =
 
 
         _ -> throwM $ AppErrorInvalidHtml "Expected open tag, contenttext for extractNameAndIdFromToken"
-
+  where
+    replaceSpanWithContentText :: Tree P.Token -> Tree P.Token
+    replaceSpanWithContentText tr =
+      case subForest tr of
+        [(Node (P.TagOpen "span" _) spForest)] -> tr{subForest = spForest}
+        _ -> tr
 
 
 runParserFromText :: (Csv.FromField a) => Text -> AppM a
@@ -782,10 +846,16 @@ extractFromTree tree@(Node a forest) f =
   let l = if f a then [tree] else []
   in l ++ (concat $ map (\t -> extractFromTree t f) forest)
 
+debugTextToFile :: Text -> AppM ()
+debugTextToFile =  BL.writeFile (runDir <> "/debug.html") . BL.fromStrict . encodeUtf8
+
 debugHtmlToFile :: Tree P.Token -> AppM ()
 debugHtmlToFile t =
-    BL.writeFile (runDir <> "/debug.html") $ BL.fromStrict . encodeUtf8 . TL.toStrict . P.renderTokens . P.tokensFromTree $ t
+    debugTokensToFile . P.tokensFromTree $ t
 
+debugTokensToFile :: [P.Token] -> AppM ()
+debugTokensToFile t =
+  debugTextToFile . TL.toStrict . P.renderTokens $ t
 
 makeHTMLTreesRequest :: Text -> AppM ([P.Token])
 makeHTMLTreesRequest u = do
