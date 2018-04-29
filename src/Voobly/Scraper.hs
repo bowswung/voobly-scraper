@@ -405,18 +405,27 @@ scrapePlayers = do
 
 withThreads :: (a -> AppM b) -> Vector a -> AppM ()
 withThreads act t = do
-  let (batch, next) = VB.splitAt 500 t
+  appEnv <- ask
+  logInfo $ "*** Launching " <> (displayShow . VB.length $ t) <> "actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
+  void $ VB.mapM (withThreadsBatch act) $ vChunksOf 500 t
+
+vChunksOf :: Int -> Vector a -> Vector (Vector a)
+vChunksOf l v =
+  if VB.null v
+    then VB.empty
+    else
+      let (batch, next) = VB.splitAt l v
+      in (VB.singleton batch) VB.++ vChunksOf l next
+
+
+withThreadsBatch :: (a -> AppM b) -> Vector a -> AppM ()
+withThreadsBatch act t = do
   appEnv <- ask
   ioAct <- stackToIO' act
   let ioActWrapped = catchAppError appEnv . ioAct
-  logInfo $ "*** Launching " <> (displayShow . VB.length $ batch) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads, " <> (displayShow . VB.length $ next) <> " actions remaining ***"
   if (debug . appEnvOptions $ appEnv)
-    then void $ mapM (liftIO . ioActWrapped) $ VB.toList batch
-    else void $ liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioActWrapped batch
-  if (VB.null next)
-    then return ()
-    else withThreads act next
-
+    then void $ mapM (liftIO . ioActWrapped) $ VB.toList t
+    else void $ liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioActWrapped t
   where
     catchAppError :: AppEnv -> IO c -> IO ()
     catchAppError appEnv i = catch (void i) (handleAppError appEnv)
