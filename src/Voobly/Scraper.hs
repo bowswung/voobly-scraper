@@ -178,6 +178,8 @@ runScraper = do
             scrapeLadder LadderRmTeam
             scrapePlayers
             scrapeMatches
+
+
           CommandQuery -> do
             db <- query' GetDB
             logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
@@ -252,7 +254,8 @@ dumpMatches = do
                 "MatchPlayerId" Csv..= errorName,
                 "MatchPlayerName" Csv..= t,
                 "MatchPlayerTeam" Csv..= errorName,
-                "MatchPlayerCiv" Csv..= errorName,
+                "MatchPlayerCivId" Csv..= errorName,
+                "MatchPlayerCivName" Csv..= errorName,
                 "MatchPlayerWinner" Csv..= errorName,
                 "MatchPlayerPreRating" Csv..= errorName,
                 "MatchPlayerPostRating" Csv..= errorName
@@ -388,25 +391,39 @@ scrapePlayers = do
       db <- query' GetDB
       now <- getCurrentTime
       let weekago = addUTCTime (-3600 * 24 * 7) now
-      let playersToUpdateBase = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just weekago) $ _dbPlayers db
+      let playersToUpdateBase = VB.fromList $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just weekago) $ _dbPlayers db
           totalPlayers = IxSet.size $ _dbPlayers db
       appEnv <- ask
       playersToUpdate <- if (debug . appEnvOptions $  appEnv)
         then do
           logDebug $ "Restricting player scraping to first 20 players for --debug"
-          return $ take 20 playersToUpdateBase
+          return $ VB.take 20 playersToUpdateBase
         else return playersToUpdateBase
-      logInfo $ "*** " <> (displayShow totalPlayers) <> " players in the DB and " <> (displayShow $ length playersToUpdate) <> " players need to be scraped ***"
+      logInfo $ "*** " <> (displayShow totalPlayers) <> " players in the DB and " <> (displayShow $ VB.length playersToUpdate) <> " players need to be scraped ***"
 
       void $ withThreads scrapePlayer playersToUpdate
 
-withThreads :: (a -> AppM b) -> [a] -> AppM [b]
+withThreads :: (a -> AppM b) -> Vector a -> AppM ()
 withThreads act t = do
+  let (batch, next) = VB.splitAt 500 t
   appEnv <- ask
   ioAct <- stackToIO' act
-  logInfo $ "*** Launching action with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
+  let ioActWrapped = catchAppError appEnv . ioAct
+  logInfo $ "*** Launching " <> (displayShow . VB.length $ batch) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads, " <> (displayShow . VB.length $ next) <> " actions remaining ***"
+  if (debug . appEnvOptions $ appEnv)
+    then void $ mapM (liftIO . ioActWrapped) $ VB.toList batch
+    else void $ liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioActWrapped batch
+  if (VB.null next)
+    then return ()
+    else withThreads act next
 
-  liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioAct t
+  where
+    catchAppError :: AppEnv -> IO c -> IO ()
+    catchAppError appEnv i = catch (void i) (handleAppError appEnv)
+    handleAppError :: AppEnv -> AppError -> IO ()
+    handleAppError appEnv e = do
+      runRIO appEnv $
+        logError $ "Error in task: " <> displayShow e
 
 playerMatchUrl :: Player -> Int -> Text
 playerMatchUrl p page = vooblyUrl <> "/profile/view/" <> (playerIdToText . playerId $ p) <> "/Matches/games/matches/user/" <> (playerIdToText . playerId $ p) <> "/0/" <> T.pack (show page)
@@ -436,7 +453,11 @@ scrapePlayer p = do
 doUpdateMatchIds :: AppM ()
 doUpdateMatchIds = do
   logInfo $ "*** Updating match ids ***"
-  update' $ UpdateMatchIds
+
+  appEnv <- ask
+  if (debug . appEnvOptions $  appEnv)
+    then logWarn $ "*** SKIPPING MATCH ID UPDATE FOR DEBUG ***"
+    else update' $ UpdateMatchIds
   logInfo $ "*** Done updating match ids ***"
 
 
@@ -524,9 +545,9 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
+  let matchIdsToUpdate = VB.fromList $ L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
 
-  logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ length matchIdsToUpdate) <> " matches need to be scraped ***"
+  logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
 
   void $ withThreads scrapeMatch matchIdsToUpdate
 
@@ -535,20 +556,31 @@ matchPageUrl :: MatchId -> Text
 matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToInt mid)
 
 scrapeMatch :: MatchId -> AppM ()
-scrapeMatch mid = do
-  logDebug $ "Scraping match " <> (displayShow . matchPageUrl $ mid)
+scrapeMatch mid =
+  case matchVooblyIssue mid of
+    Just a -> do
+      update' $ UpdateMatchId mid a
+      logWarn $ "Voobly issue handled " <> displayShow a <> " for match " <> displayShow mid
+    Nothing -> doScrapeMatch mid
+  where
+    matchVooblyIssue :: MatchId -> Maybe MatchFetchStatus
+    matchVooblyIssue (MatchId 16212164) = Just $ MatchFetchStatusVooblyIssue "No winning team"
+    matchVooblyIssue _ = Nothing
 
+doScrapeMatch :: MatchId -> AppM ()
+doScrapeMatch mid = do
+  logDebug $ "Scraping match " <> (displayShow . matchPageUrl $ mid)
   t <- makeTextRequest $ matchPageUrl mid
   ladder <- extractMatchLadder t
   case ladder of
     Left l -> do
       update' $ UpdateMatchId mid (MatchFetchStatusUnsupportedLadder l)
-      logDebug $ "Unsupported ladder" <> displayShow l
+      logDebug $ "Unsupported ladder " <> displayShow l
     Right l -> do
       date <- extractMatchDate t
       duration <- extractMatchDuration t
       mapName <- extractMatchMap t
-      mapNumberOfPlayers <- extractMatchNumberOfPlayers t
+      mapNumberOfPlayers <- extractMatchNumberOfPlayers mid t
       matchMods <- extractMatchMods t
       (winningTeam, players) <- extractMapPlayers mapNumberOfPlayers t
       let match = Match {
@@ -561,14 +593,16 @@ scrapeMatch mid = do
             , matchPlayers = players
             , matchWinner = winningTeam
         }
-      knownPlayers <- (flip mapM) players $ \p -> do
-        fmap isJust $ query' $ GetPlayer $ matchPlayerPlayerId p
+      knownPlayers <- (flip mapM) players $ \p ->
+        case p of
+          MatchPlayer{} -> fmap isJust $ query' $ GetPlayer $ matchPlayerPlayerId p
+          MatchPlayerError{} -> pure True
       if and knownPlayers
         then do
 
-          logDebug $ "Inserted match with id " <> displayShow mid
           update' $ UpdateMatch match
           update' $ UpdateMatchId mid MatchFetchStatusComplete
+          logDebug $ "Inserted match with id " <> displayShow mid
           return ()
 
         else do
@@ -609,8 +643,10 @@ extractMatchMap t =
   [x] -> return $ T.strip . T.pack $ x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match map"
 
-extractMatchNumberOfPlayers :: Text -> AppM Int
-extractMatchNumberOfPlayers t =
+extractMatchNumberOfPlayers :: MatchId -> Text -> AppM Int
+-- voobly bugs
+extractMatchNumberOfPlayers (MatchId 16210602) _ = return 3
+extractMatchNumberOfPlayers _mid t =
  case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Players:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
   [x] -> runParserFromText $ T.pack x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one int for match number of players"
@@ -629,7 +665,7 @@ extractMapPlayers expected t = do
     then do
       winners <- mapM (extractMatchPlayer True) winT
       losers <- mapM (extractMatchPlayer False) loseT
-      case L.nub $ map matchPlayerTeam winners of
+      case L.nub $ map matchPlayerTeam (filter (not . isMatchPlayerError) winners) of
         [x] -> return (x, winners ++ losers)
         xs -> throwM $ AppErrorInvalidHtml $  "Expected to find exactly one winning team but got" <> (utf8BuilderToText . displayShow $ xs)
     else throwM $ AppErrorInvalidHtml $  "Expected to find exactly " <> (utf8BuilderToText . displayShow $ expected) <> " player tables, but found " <> (utf8BuilderToText . displayShow $ psFound)
@@ -667,10 +703,11 @@ extractMatchPlayer isWinner t = do
 
     extractPlayerMatchRating :: AppM (Int, Int, Team)
     extractPlayerMatchRating = do
+
       let reg =
             if isWinner
               then "New Rating: <b>([0-9]+)</b>Points: <b><span style=\"[^\"]*\">([0-9]+)</span></b> Team:<b>([0-9]+)</b>"
-              else "Team: <b>([0-9]+)</b> Points:<b><span style=\"[^\"]*\">-([0-9]+)</span></b> New Rating:<b>([0-9]+)</b>"
+              else "Team: <b>([0-9]+)</b> Points:<b><span style=\"[^\"]*\">-?([0-9]+)</span></b> New Rating:<b>([0-9]+)</b>"
           normalise = if isWinner then id else reverse
       case normalise $ doRegexJustCaptureGroups (T.unpack . T.filter (/= '\n') . TL.toStrict . P.renderTokens . P.tokensFromTree $ t) reg of
         newRatingS:pointsChangeS:teamS:[] -> do
@@ -731,9 +768,7 @@ extractMatchPlayer isWinner t = do
 findPlayerTables :: Text -> AppM ([Tree P.Token], [Tree P.Token])
 findPlayerTables t = do
   mainTable <- extractMainPlayerTable t
-
   (winnerTable, loserTable) <- extractWinnerLoserTables mainTable
-
   winnerTables <- extractPlayerTables winnerTable
   loserTables <- extractPlayerTables loserTable
   return (winnerTables, loserTables)
@@ -864,16 +899,22 @@ extractFromTree tree@(Node a forest) f =
   let l = if f a then [tree] else []
   in l ++ (concat $ map (\t -> extractFromTree t f) forest)
 
-debugTextToFile :: Text -> AppM ()
-debugTextToFile =  BL.writeFile (runDir <> "/debug.html") . BL.fromStrict . encodeUtf8
+debugTextToFile :: Text -> Maybe String -> AppM ()
+debugTextToFile t n =
+  let name = fromMaybe "debug" n
+  in BL.writeFile (runDir <> "/" <> name <> ".html") . BL.fromStrict . encodeUtf8 $ t
 
-debugHtmlToFile :: Tree P.Token -> AppM ()
-debugHtmlToFile t =
-    debugTokensToFile . P.tokensFromTree $ t
+debugTreeToFile :: Tree P.Token -> Maybe String -> AppM ()
+debugTreeToFile t n =
+    debugTokensToFile (P.tokensFromTree t) n
 
-debugTokensToFile :: [P.Token] -> AppM ()
-debugTokensToFile t =
-  debugTextToFile . TL.toStrict . P.renderTokens $ t
+debugForestToFile :: Forest P.Token -> Maybe String -> AppM ()
+debugForestToFile t n =
+    debugTokensToFile (P.tokensFromForest t) n
+
+debugTokensToFile :: [P.Token] -> Maybe String -> AppM ()
+debugTokensToFile t n =
+  debugTextToFile (TL.toStrict . P.renderTokens $ t) n
 
 makeHTMLTreesRequest :: Text -> AppM ([P.Token])
 makeHTMLTreesRequest u = do

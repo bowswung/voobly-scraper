@@ -133,6 +133,10 @@ data MatchPlayer = MatchPlayer {
   matchPlayerWon :: Bool
 } | MatchPlayerError Text deriving (Eq, Ord, Show)
 
+isMatchPlayerError :: MatchPlayer -> Bool
+isMatchPlayerError (MatchPlayerError _) = True
+isMatchPlayerError _ = False
+
 data PlayerLadderProgress = PlayerLadderProgress {
   playerLadderProgressLadder :: Ladder
 , playerLadderProgressLastPageHandled :: Maybe Int
@@ -145,6 +149,7 @@ data MatchFetchStatus =
   | MatchFetchStatusComplete
   | MatchFetchStatusUnsupportedLadder Text
   | MatchFetchStatusMissingPlayer UTCTime
+  | MatchFetchStatusVooblyIssue Text
   deriving (Eq, Ord, Show)
 
 instance NFData MatchFetchStatus where
@@ -152,6 +157,7 @@ instance NFData MatchFetchStatus where
   rnf MatchFetchStatusComplete = ()
   rnf (MatchFetchStatusUnsupportedLadder t) = rnf t
   rnf (MatchFetchStatusMissingPlayer t) = rnf t
+  rnf (MatchFetchStatusVooblyIssue t) = rnf t
 
 instance Hashable MatchFetchStatus where
   hash = hash.show
@@ -268,7 +274,11 @@ getMatchIds = L.view dbMatchIds <$> ask
 
 
 updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
-updateMatchId a b = modify (over dbMatchIds (\m -> HM.insert a b m))
+updateMatchId a b = do
+  db <- get
+  let updatedMap = force $ HM.insert a b (_dbMatchIds db)
+  modify (L.set dbMatchIds updatedMap)
+
 
 getCivilisation :: CivilisationId -> Query DB (Maybe Civilisation)
 getCivilisation pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbCivilisations <$> ask
