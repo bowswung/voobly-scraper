@@ -19,11 +19,12 @@ import qualified RIO.HashMap as HM
 import Data.Hashable
 import qualified Data.Csv as Csv
 import qualified RIO.Vector.Boxed as VB
+import qualified RIO.Set as Set
 
 newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
 newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show)
 newtype CivilisationId = CivilisationId {civilisationIdToInt :: Int} deriving (Eq, Ord, Show)
-newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable)
+newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable, NFData)
 
 defaultCivs :: [Civilisation]
 defaultCivs = map (\(a,b) -> Civilisation (CivilisationId a) b) $ filter (\x -> (T.length . snd $ x) > 0) defaultCivTups
@@ -68,8 +69,25 @@ defaultCivTups = [
 data Player = Player {
   playerId :: PlayerId,
   playerName :: Text,
-  playerMatchIds :: Vector MatchId,
+  playerMatchIds :: !(Set.Set MatchId),
   playerLastCompletedUpdate :: Maybe UTCTime
+} deriving (Eq, Ord, Show)
+
+instance Migrate Player where
+  type MigrateFrom Player = Player_v0
+  migrate Player_v0{..} = Player {
+    playerId = v0_playerId
+  , playerName = v0_playerName
+  , playerMatchIds = Set.fromList . VB.toList $ v0_playerMatchIds
+  , playerLastCompletedUpdate = v0_playerLastCompletedUpdate
+
+  }
+
+data Player_v0 = Player_v0 {
+  v0_playerId :: PlayerId,
+  v0_playerName :: Text,
+  v0_playerMatchIds :: !(Vector MatchId),
+  v0_playerLastCompletedUpdate :: Maybe UTCTime
 } deriving (Eq, Ord, Show)
 
 data Ladder =
@@ -129,6 +147,12 @@ data MatchFetchStatus =
   | MatchFetchStatusMissingPlayer UTCTime
   deriving (Eq, Ord, Show)
 
+instance NFData MatchFetchStatus where
+  rnf MatchFetchStatusUntried = ()
+  rnf MatchFetchStatusComplete = ()
+  rnf (MatchFetchStatusUnsupportedLadder t) = rnf t
+  rnf (MatchFetchStatusMissingPlayer t) = rnf t
+
 instance Hashable MatchFetchStatus where
   hash = hash.show
   hashWithSalt i a = hashWithSalt i (show a)
@@ -158,7 +182,7 @@ data DB = DB {
 , _dbCivilisations :: CivilisationSet
 , _dbMatches :: MatchSet
 , _dbPlayerLadderProgress :: PlayerLadderProgressSet
-, _dbMatchIds :: HM.HashMap MatchId MatchFetchStatus
+, _dbMatchIds :: !(HM.HashMap MatchId MatchFetchStatus)
 }
 
 L.makeLenses ''DB
@@ -210,7 +234,7 @@ addNewMatchIds pid matchIds = do
   case mp of
     Nothing -> return $ Just $ "Could not find player with id " <> (T.pack . show $ pid) <> " when updating match ids"
     Just p -> do
-      let newP = p{playerMatchIds = foldr insertIfAbsent (playerMatchIds p) matchIds}
+      let newP = p{playerMatchIds = force $ Set.union (playerMatchIds p) (Set.fromList matchIds)}
       updatePlayer newP
       return Nothing
 
@@ -235,8 +259,8 @@ insertDefaultHMIfAbsent b a m =
 updateMatchIds ::  Update DB ()
 updateMatchIds = do
   db <- get
-  let allMatchIds = VB.concat (map playerMatchIds $ IxSet.toList (_dbPlayers db))
-      updatedMap = foldr (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ VB.toList allMatchIds
+  let allMatchIds = Set.unions (map playerMatchIds $ IxSet.toList (_dbPlayers db))
+      updatedMap = force $ Set.foldr' (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ allMatchIds
   modify (L.set dbMatchIds updatedMap)
 
 getMatchIds :: Query DB (HM.HashMap MatchId MatchFetchStatus)
@@ -298,7 +322,8 @@ instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b)
 $(deriveSafeCopy 0 'base ''Cookie)
 $(deriveSafeCopy 0 'base ''DB)
 $(deriveSafeCopy 0 'base ''PlayerId)
-$(deriveSafeCopy 0 'base ''Player)
+$(deriveSafeCopy 1 'extension ''Player)
+$(deriveSafeCopy 0 'base ''Player_v0)
 $(deriveSafeCopy 0 'base ''Ladder)
 $(deriveSafeCopy 0 'base ''PlayerLadder)
 $(deriveSafeCopy 0 'base ''Team)

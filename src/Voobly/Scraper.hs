@@ -34,6 +34,9 @@ import Text.Regex.Posix ((=~))
 import qualified Safe as Safe
 import qualified Data.Proxy as Proxy
 import Control.Concurrent.Async.Extra
+import System.Cron
+import qualified RIO.Set as Set
+
 data AppError =
     AppErrorCouldntLogIn Text
   | AppErrorInvalidHtml Text
@@ -129,6 +132,7 @@ withAcid = bracket openState closeState
       liftIO $ createCheckpointAndClose acid
 
 
+
 runStack :: AppEnv -> AppState -> AppM a -> IO a
 runStack appEnv appState f = runRIO appEnv $ runAppM appState f
 
@@ -143,6 +147,15 @@ stackToIO' f = do
   appEnv <- ask
   appState <- get
   return $ \a -> runStack appEnv appState (f a)
+
+doCreateCheckpoint :: AppM ()
+doCreateCheckpoint = do
+  appEnv <- ask
+  logInfo $ "*** START ACID CHECKPOINT ***"
+  liftIO $ createCheckpoint $ appEnvAcid appEnv
+  liftIO $ createArchive  $ appEnvAcid appEnv
+  logInfo $ "*** END ACID CHECKPOINT ***"
+
 runScraper :: IO ()
 runScraper = do
   options <- execParser optionsParserInfo
@@ -156,6 +169,10 @@ runScraper = do
       runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
+            checkpointTask <- stackToIO doCreateCheckpoint
+            _ <- liftIO $ execSchedule $ do
+              addJob checkpointTask "*/5 * * * *"
+
             initialise
             scrapeLadder LadderRm
             scrapeLadder LadderRmTeam
@@ -353,7 +370,7 @@ scrapeLadder l = do
 scrapePlayers :: AppM ()
 scrapePlayers = do
   logInfo $ "*** Scraping player match ids ***"
-
+  doUpdateMatchIds
   skip <- do
     appEnv <- ask
     if (debug . appEnvOptions $  appEnv)
@@ -403,7 +420,7 @@ scrapePlayer p = do
   logDebug $ "Looking for player games " <> (displayShow $ playerId p) <> " at " <> (displayShow $ playerMatchUrl p 0)
 
   totalMatches <- extractMatchCount r
-  let matchesMissing = totalMatches - (VB.length $ playerMatchIds p)
+  let matchesMissing = totalMatches - (Set.size $ playerMatchIds p)
       pagesToRequest = ceiling $ matchesMissing `divInt` 10
   if pagesToRequest < 1
     then do
@@ -415,11 +432,12 @@ scrapePlayer p = do
     else do
       let pages = reverse [1 .. pagesToRequest]
       void $ mapM (scrapePlayerPage p pagesToRequest) pages
-      doUpdateMatchIds
 
 doUpdateMatchIds :: AppM ()
 doUpdateMatchIds = do
+  logInfo $ "*** Updating match ids ***"
   update' $ UpdateMatchIds
+  logInfo $ "*** Done updating match ids ***"
 
 
 
@@ -757,7 +775,7 @@ type LadderRow = (Text, PlayerId, Int, Int, Int)
 
 updatePlayerLadders :: Ladder -> LadderRow -> AppM ()
 updatePlayerLadders l (name, pid, rating, wins, loss) = do
-  let p = Player pid name VB.empty Nothing
+  let p = Player pid name Set.empty Nothing
   update' $ UpdatePlayer p
   let pl = PlayerLadder{
              playerLadderPlayerId = pid
