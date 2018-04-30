@@ -143,6 +143,17 @@ data PlayerLadderProgress = PlayerLadderProgress {
 , playerLadderProgressLastCompleted :: Maybe UTCTime
 } deriving (Eq, Ord, Show)
 
+data AppError =
+    AppErrorCouldntLogIn Text
+  | AppErrorInvalidHtml Text
+  | AppErrorParserError Text
+  | AppErrorNotFound Text
+  | AppErrorCommandFailure Text
+  | AppErrorMissingCiv Text
+  | AppErrorDBError Text
+  deriving (Show, Eq, Ord, Typeable)
+instance Exception AppError
+
 
 data MatchFetchStatus =
     MatchFetchStatusUntried
@@ -150,6 +161,7 @@ data MatchFetchStatus =
   | MatchFetchStatusUnsupportedLadder Text
   | MatchFetchStatusMissingPlayer UTCTime
   | MatchFetchStatusVooblyIssue Text
+  | MatchFetchStatusExceptionError AppError
   deriving (Eq, Ord, Show)
 
 instance NFData MatchFetchStatus where
@@ -158,6 +170,11 @@ instance NFData MatchFetchStatus where
   rnf (MatchFetchStatusUnsupportedLadder t) = rnf t
   rnf (MatchFetchStatusMissingPlayer t) = rnf t
   rnf (MatchFetchStatusVooblyIssue t) = rnf t
+  rnf (MatchFetchStatusExceptionError _) = ()
+
+instance NFData Player where
+  rnf Player{} = ()
+
 
 instance Hashable MatchFetchStatus where
   hash = hash.show
@@ -183,11 +200,11 @@ makeSimpleIxSet "PlayerLadderProgressSet" ''PlayerLadderProgress ['playerLadderP
 
 data DB = DB {
   _dbCookies :: [Cookie]
-, _dbPlayers :: PlayerSet
-, _dbPlayerLadders :: PlayerLadderSet
-, _dbCivilisations :: CivilisationSet
-, _dbMatches :: MatchSet
-, _dbPlayerLadderProgress :: PlayerLadderProgressSet
+, _dbPlayers :: !PlayerSet
+, _dbPlayerLadders :: !PlayerLadderSet
+, _dbCivilisations :: !CivilisationSet
+, _dbMatches :: !MatchSet
+, _dbPlayerLadderProgress :: !PlayerLadderProgressSet
 , _dbMatchIds :: !(HM.HashMap MatchId MatchFetchStatus)
 }
 
@@ -274,9 +291,9 @@ getMatchIds = L.view dbMatchIds <$> ask
 
 
 updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
-updateMatchId a b = do
+updateMatchId !a !b = do
   db <- get
-  let updatedMap = force $ HM.insert a b (_dbMatchIds db)
+  let updatedMap =  HM.insert a b (_dbMatchIds db)
   modify (L.set dbMatchIds updatedMap)
 
 
@@ -287,10 +304,11 @@ updateCivilisation :: Civilisation -> Update DB ()
 updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisationId a) a))
 
 updateMatch :: Match -> Update DB ()
-updateMatch a = modify (over dbMatches (IxSet.updateIx (matchId a) a))
+updateMatch !a = modify (over dbMatches (IxSet.updateIx (matchId a) a))
 
 
-
+deleteMatches :: Update DB ()
+deleteMatches = modify (L.set dbMatches IxSet.empty)
 
 
 
@@ -344,6 +362,7 @@ $(deriveSafeCopy 0 'base ''MatchPlayer)
 $(deriveSafeCopy 0 'base ''MatchId)
 $(deriveSafeCopy 0 'base ''PlayerLadderProgress)
 $(deriveSafeCopy 0 'base ''MatchFetchStatus)
+$(deriveSafeCopy 0 'base ''AppError)
 
 $(makeAcidic ''DB [
   'updateDB,
@@ -363,6 +382,7 @@ $(makeAcidic ''DB [
   , 'updateMatch
   , 'updateCivilisation
   , 'addNewMatchIds
+  , 'deleteMatches
   ])
 
 

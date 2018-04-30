@@ -16,7 +16,7 @@ import qualified RIO.HashMap as HM
 
 import Data.Acid
 import Data.Tree
-import Data.Acid.Local
+--import Data.Acid.Local
 import Options.Applicative
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
@@ -33,32 +33,26 @@ import qualified Data.IxSet.Typed as IxSet
 import Text.Regex.Posix ((=~))
 import qualified Safe as Safe
 import qualified Data.Proxy as Proxy
-import Control.Concurrent.Async.Extra
-import System.Cron
+--import Control.Concurrent.Async.Extra
+--suimport System.Cron
 import qualified RIO.Set as Set
+import qualified Control.Monad.Catch as MC
+import qualified Control.Concurrent.QSem as S
+import System.IO(putStrLn)
 
-data AppError =
-    AppErrorCouldntLogIn Text
-  | AppErrorInvalidHtml Text
-  | AppErrorParserError Text
-  | AppErrorNotFound Text
-  | AppErrorCommandFailure Text
-  | AppErrorMissingCiv Text
-  | AppErrorDBError Text
-  deriving (Show, Typeable)
-
-instance Exception AppError
 
 data Command =
     CommandRun
   | CommandQuery
   | CommandDump
+  | CommandDeleteMatches
 
 data Options = Options
   { username   :: Text
   , password   :: Text
   , threadCount :: Int
   , debug :: Bool
+  , skipUpdateMatchIds :: Bool
   , runCommand :: Command
   }
 
@@ -87,10 +81,15 @@ optionsParser = Options
        long "debug"
     <> help "For debugging"
     )
+  <*> switch (
+       long "skip-update-match-ids"
+    <> help "For skipping match id update"
+    )
    <*> subparser (
       ( command "run"          (info (helper <*> pure CommandRun)                 (progDesc "Run the scraper" ))
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
+     <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))
       )
     )
 
@@ -108,8 +107,10 @@ data AppState = AppState {
   appStateManager :: Manager
 }
 
+deriving instance MC.MonadCatch (RIO AppEnv)
+
 newtype AppM a = AppM { extractAppM :: StateT AppState (RIO AppEnv) a}
-  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MonadReader AppEnv, MonadState AppState)
+  deriving (Functor, Applicative, Monad, MonadIO, MonadThrow, MC.MonadCatch, MonadReader AppEnv, MonadState AppState)
 
 runAppM :: AppState -> AppM a -> RIO AppEnv a
 runAppM st act = do
@@ -128,25 +129,22 @@ withAcid = bracket openState closeState
 
     closeState :: AcidState DB -> IO ()
     closeState acid = do
+      putStrLn "***** CLOSING STATE *****"
+      liftIO $ createCheckpoint acid
       liftIO $ createArchive acid
-      liftIO $ createCheckpointAndClose acid
+      liftIO $ closeAcidState acid
+      putStrLn "***** STATE CHECKPOINTED, ARCHIVED and CLOSED *****"
 
 
 
 runStack :: AppEnv -> AppState -> AppM a -> IO a
 runStack appEnv appState f = runRIO appEnv $ runAppM appState f
 
-stackToIO :: AppM a -> AppM (IO a)
-stackToIO a = do
-  appEnv <- ask
-  appState <- get
-  return $ runStack appEnv appState a
+stackToIO :: AppEnv -> AppState -> AppM a -> IO a
+stackToIO appEnv appState a = runStack appEnv appState a
 
-stackToIO' :: (a -> AppM b) -> AppM (a -> IO b)
-stackToIO' f = do
-  appEnv <- ask
-  appState <- get
-  return $ \a -> runStack appEnv appState (f a)
+stackToIO' :: AppEnv -> AppState -> (a -> AppM b) -> a -> IO b
+stackToIO' appEnv appState f a = runStack appEnv appState (f a)
 
 doCreateCheckpoint :: AppM ()
 doCreateCheckpoint = do
@@ -169,9 +167,9 @@ runScraper = do
       runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
-            checkpointTask <- stackToIO doCreateCheckpoint
-            _ <- liftIO $ execSchedule $ do
-              addJob checkpointTask "*/5 * * * *"
+            -- checkpointTask <- stackToIO doCreateCheckpoint
+            -- _ <- liftIO $ execSchedule $ do
+            -- addJob checkpointTask "5,20,35,50 * * * *"
 
             initialise
             scrapeLadder LadderRm
@@ -188,13 +186,16 @@ runScraper = do
           CommandDump -> do
             dumpMatches
 
+          CommandDeleteMatches -> do
+            update' DeleteMatches
+            logDebug $ "Match database cleared"
 
 dumpMatches :: AppM ()
 dumpMatches = do
   db <- query' GetDB
   let civMap = HM.fromList $ (map (\c -> (civilisationId c, Csv.toField . civilisationName $ c))) (IxSet.toList ._dbCivilisations $ db)
   rendered <- fmap concat $ mapM (renderMatch civMap) $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) (_dbMatches db)
-  logInfo $ "Dumping " <> (displayShow . length $ rendered) <> " match records to csv"
+  logInfo $ "Dumping " <> (displayShow . IxSet.size $ _dbMatches db) <> " matches in "  <> (displayShow . length $ rendered) <> " rows to csv"
   let enc = Csv.encodeByNameWith Csv.defaultEncodeOptions headerDef rendered
   let fname = runDir <> "/matchDump.csv"
   BL.writeFile fname enc
@@ -401,38 +402,63 @@ scrapePlayers = do
         else return playersToUpdateBase
       logInfo $ "*** " <> (displayShow totalPlayers) <> " players in the DB and " <> (displayShow $ VB.length playersToUpdate) <> " players need to be scraped ***"
 
-      void $ withThreads scrapePlayer playersToUpdate
+      appState <- get
 
-withThreads :: (a -> AppM b) -> Vector a -> AppM ()
-withThreads act t = do
-  appEnv <- ask
-  logInfo $ "*** Launching " <> (displayShow . VB.length $ t) <> "actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
-  void $ VB.mapM (withThreadsBatch act) $ vChunksOf 500 t
+      liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapePlayer) playersToUpdate
 
-vChunksOf :: Int -> Vector a -> Vector (Vector a)
-vChunksOf l v =
-  if VB.null v
-    then VB.empty
-    else
-      let (batch, next) = VB.splitAt l v
-      in (VB.singleton batch) VB.++ vChunksOf l next
+withThreads :: AppEnv -> (a -> IO ()) -> Vector a -> IO ()
+withThreads appEnv ioAct t = do
+  let ioActWrapped = catchAppError . ioAct
+
+  putStrLn $ T.unpack . utf8BuilderToText $ "*** Launching " <> (displayShow . VB.length $ t) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
 
 
-withThreadsBatch :: (a -> AppM b) -> Vector a -> AppM ()
-withThreadsBatch act t = do
-  appEnv <- ask
-  ioAct <- stackToIO' act
-  let ioActWrapped = catchAppError appEnv . ioAct
-  if (debug . appEnvOptions $ appEnv)
-    then void $ mapM (liftIO . ioActWrapped) $ VB.toList t
-    else void $ liftIO $ mapConcurrentlyBounded (threadCount . appEnvOptions $ appEnv) ioActWrapped t
+  let runner =
+          if (debug . appEnvOptions $ appEnv)
+            then \x -> VB.mapM_ (ioActWrapped) x
+            else \x ->  mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
+      runnerWithMore = \x -> do
+        runner x
+        putStrLn "***** CHECKPOINTING ACID AFTER 1000 tasks *****"
+        createCheckpoint (appEnvAcid appEnv)
+        createArchive (appEnvAcid appEnv)
+        putStrLn "***** CHECKPOINTING ACID COMPLETED *****"
+
+  liftIO $ mapM_ runnerWithMore $  vChunksOf 1000 t
   where
-    catchAppError :: AppEnv -> IO c -> IO ()
-    catchAppError appEnv i = catch (void i) (handleAppError appEnv)
-    handleAppError :: AppEnv -> AppError -> IO ()
-    handleAppError appEnv e = do
+    catchAppError :: IO c -> IO ()
+    catchAppError i = catch (void i) handleAnyException
+    handleAnyException ::SomeException -> IO ()
+    handleAnyException e = do
       runRIO appEnv $
         logError $ "Error in task: " <> displayShow e
+
+mapConcurrentlyBounded_ :: Traversable t => Int -> (a -> IO b) -> t a -> IO ()
+mapConcurrentlyBounded_ bound act items =
+    do qs <- S.newQSem bound
+       let wrappedAction x =
+               bracket_ (S.waitQSem qs) (S.signalQSem qs) (act x)
+       mapConcurrently_ wrappedAction items
+
+
+
+vChunksOf :: Int -> Vector a -> [(Vector a)]
+vChunksOf l v =
+  if VB.null v
+    then []
+    else
+      let (batch, next) = VB.splitAt l v
+      in batch : vChunksOf l next
+
+
+{-withThreadsBatch :: (a -> AppM b) -> Vector a -> AppM ()
+withThreadsBatch act t = do
+  if (debug . appEnvOptions $ appEnv)
+    then mapM_ (liftIO . ioActWrapped) $ VB.toList t
+    else liftIO $ mapConcurrently_ ioActWrapped t
+  where-}
+
+
 
 playerMatchUrl :: Player -> Int -> Text
 playerMatchUrl p page = vooblyUrl <> "/profile/view/" <> (playerIdToText . playerId $ p) <> "/Matches/games/matches/user/" <> (playerIdToText . playerId $ p) <> "/0/" <> T.pack (show page)
@@ -464,8 +490,8 @@ doUpdateMatchIds = do
   logInfo $ "*** Updating match ids ***"
 
   appEnv <- ask
-  if (debug . appEnvOptions $  appEnv)
-    then logWarn $ "*** SKIPPING MATCH ID UPDATE FOR DEBUG ***"
+  if (debug . appEnvOptions $  appEnv) || (skipUpdateMatchIds . appEnvOptions $ appEnv)
+    then logWarn $ "*** SKIPPING MATCH ID UPDATE FOR DEBUG OR --skip-update-match-ids ***"
     else update' $ UpdateMatchIds
   logInfo $ "*** Done updating match ids ***"
 
@@ -557,8 +583,9 @@ scrapeMatches = do
   let matchIdsToUpdate = VB.fromList $ L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
-
-  void $ withThreads scrapeMatch matchIdsToUpdate
+  appEnv <- ask
+  appState <- get
+  liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapeMatch) matchIdsToUpdate
 
 
 matchPageUrl :: MatchId -> Text
@@ -570,8 +597,14 @@ scrapeMatch mid =
     Just a -> do
       update' $ UpdateMatchId mid a
       logWarn $ "Voobly issue handled " <> displayShow a <> " for match " <> displayShow mid
-    Nothing -> doScrapeMatch mid
+    Nothing -> MC.catch (doScrapeMatch mid) handleMatchError
   where
+    handleMatchError :: AppError -> AppM ()
+    handleMatchError e = do
+      logError $ "Caught AppError when updating match " <> displayShow mid <> ": " <> displayShow e
+      update' $ UpdateMatchId mid (MatchFetchStatusExceptionError e)
+
+
     matchVooblyIssue :: MatchId -> Maybe MatchFetchStatus
     matchVooblyIssue (MatchId 16212164) = Just $ MatchFetchStatusVooblyIssue "No winning team"
     matchVooblyIssue _ = Nothing
