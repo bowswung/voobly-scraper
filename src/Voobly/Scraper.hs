@@ -46,6 +46,7 @@ data Command =
   | CommandQuery
   | CommandDump
   | CommandDeleteMatches
+  | CommandRunErrors
 
 data Options = Options
   { username   :: Text
@@ -90,6 +91,7 @@ optionsParser = Options
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
      <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))
+     <> command "runErrors"  (info (helper <*> pure CommandRunErrors)          (progDesc "Sequentially run matches that were previously errors."))
       )
     )
 
@@ -189,6 +191,13 @@ runScraper = do
           CommandDeleteMatches -> do
             update' DeleteMatches
             logDebug $ "Match database cleared"
+
+          CommandRunErrors -> do
+            matchIds <- query' GetMatchIds
+            let matchIdsToUpdate = L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds
+            logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
+            void $ mapM scrapeMatch matchIdsToUpdate
+
 
 dumpMatches :: AppM ()
 dumpMatches = do
@@ -293,12 +302,14 @@ initialise = do
       logInfo "Not logged in, authenticating now"
       authenticate
 
+ignore :: a -> b -> Maybe c
+ignore _ _ = Nothing
 
 isLoggedIn :: AppM Bool
 isLoggedIn = do
   req <- parseRequest $ T.unpack $ vooblyUrl <> "/profile"
   res <- makeRequest $ req
-  let resText = decodeUtf8With lenientDecode $ BL.toStrict $ responseBody res
+  let resText = decodeUtf8With ignore $ BL.toStrict $ responseBody res
   return . not $  T.isInfixOf "You must login to access this page." resText
 
 makeSetupRequest :: AppM ()
@@ -407,7 +418,7 @@ scrapePlayers = do
       liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapePlayer) playersToUpdate
 
 withThreads :: AppEnv -> (a -> IO ()) -> Vector a -> IO ()
-withThreads appEnv ioAct t = do
+withThreads appEnv ioAct !t = do
   let ioActWrapped = catchAppError . ioAct
 
   putStrLn $ T.unpack . utf8BuilderToText $ "*** Launching " <> (displayShow . VB.length $ t) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
@@ -580,7 +591,7 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = VB.fromList $ L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
+  let matchIdsToUpdate = force $ VB.fromList $ L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
@@ -600,14 +611,20 @@ scrapeMatch mid =
     Nothing -> MC.catch (doScrapeMatch mid) handleMatchError
   where
     handleMatchError :: AppError -> AppM ()
+    handleMatchError (AppErrorVooblyIssue t) = do
+      logWarn $ "Caught AppErrorVooblyIssue when updating match " <> displayShow mid <> ": " <> displayShow t
+      update' $ UpdateMatchId mid (MatchFetchStatusVooblyIssue t)
+
     handleMatchError e = do
       logError $ "Caught AppError when updating match " <> displayShow mid <> ": " <> displayShow e
       update' $ UpdateMatchId mid (MatchFetchStatusExceptionError e)
 
 
-    matchVooblyIssue :: MatchId -> Maybe MatchFetchStatus
-    matchVooblyIssue (MatchId 16212164) = Just $ MatchFetchStatusVooblyIssue "No winning team"
-    matchVooblyIssue _ = Nothing
+
+
+
+
+
 
 doScrapeMatch :: MatchId -> AppM ()
 doScrapeMatch mid = do
@@ -680,18 +697,20 @@ extractMatchDuration t =
 
 
 extractMatchMap :: Text -> AppM Text
-extractMatchMap t =
- case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Map:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
-  [x] -> return $ T.strip . T.pack $ x
-  _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match map"
+extractMatchMap t = do
+  debugTextToFile t Nothing
+  case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Map:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
+    [x] -> return $ T.strip . T.pack $ x
+    xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for match map but found " <> (utf8BuilderToText . displayShow $ xs)
 
 extractMatchNumberOfPlayers :: MatchId -> Text -> AppM Int
--- voobly bugs
-extractMatchNumberOfPlayers (MatchId 16210602) _ = return 3
-extractMatchNumberOfPlayers _mid t =
- case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Players:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
-  [x] -> runParserFromText $ T.pack x
-  _ -> throwM $ AppErrorInvalidHtml "Expected to find one int for match number of players"
+extractMatchNumberOfPlayers mid t = do
+  case matchOverrideNumberOfPlayers mid of
+    Just i -> pure i
+    Nothing ->
+     case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Players:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
+      [x] -> runParserFromText $ T.pack x
+      _ -> throwM $ AppErrorInvalidHtml "Expected to find one int for match number of players"
 
 extractMatchMods :: Text -> AppM [Text]
 extractMatchMods t =
@@ -699,18 +718,21 @@ extractMatchMods t =
   [x] -> return $ map T.strip $ T.split (== '|') . T.pack $ x
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match mods"
 
+-- we were checking expected players vs player tables found as a sanity check, but too many times Voobly just has the wrong number of players, so we are going to simply trust in their html (which is probably asking for trouble, but still...)
 extractMapPlayers :: Int -> Text -> AppM (Team, [MatchPlayer])
-extractMapPlayers expected t = do
+extractMapPlayers _expected t = do
   (winT, loseT) <- findPlayerTables t
   let psFound = length winT + length loseT
-  if  psFound == expected
+  if  psFound > 1 && psFound < 9
     then do
       winners <- mapM (extractMatchPlayer True) winT
       losers <- mapM (extractMatchPlayer False) loseT
       case L.nub $ map matchPlayerTeam (filter (not . isMatchPlayerError) winners) of
+        [] -> throwM $ AppErrorVooblyIssue "No winning team"
         [x] -> return (x, winners ++ losers)
         xs -> throwM $ AppErrorInvalidHtml $  "Expected to find exactly one winning team but got" <> (utf8BuilderToText . displayShow $ xs)
-    else throwM $ AppErrorInvalidHtml $  "Expected to find exactly " <> (utf8BuilderToText . displayShow $ expected) <> " player tables, but found " <> (utf8BuilderToText . displayShow $ psFound)
+    else throwM $ AppErrorInvalidHtml $  "Expected to find between 1 and 8 player tables but found " <> (utf8BuilderToText . displayShow $ psFound)
+    --else throwM $ AppErrorInvalidHtml $  "Expected to find exactly " <> (utf8BuilderToText . displayShow $ expected) <> " player tables, but found " <> (utf8BuilderToText . displayShow $ psFound)
 
 treeToText :: Tree P.Token -> Text
 treeToText = T.filter (/= '\n') .  TL.toStrict . P.renderTokens . P.tokensFromTree
@@ -962,13 +984,13 @@ makeHTMLTreesRequest :: Text -> AppM ([P.Token])
 makeHTMLTreesRequest u = do
   baseReq <- parseRequest $ T.unpack $ u
   res <- makeRequest baseReq
-  return $ P.canonicalizeTokens $ P.parseTokens $ decodeUtf8With lenientDecode (BL.toStrict $ responseBody res)
+  return $ P.canonicalizeTokens $ P.parseTokens $ decodeUtf8With ignore (BL.toStrict $ responseBody res)
 
 makeTextRequest :: Text -> AppM Text
 makeTextRequest u = do
   baseReq <- parseRequest $ T.unpack $ u
   res <- makeRequest baseReq
-  return $ decodeUtf8With lenientDecode (BL.toStrict $ responseBody res)
+  return $ decodeUtf8With ignore (BL.toStrict $ responseBody res)
 
 
 
@@ -1059,3 +1081,41 @@ update' e = do
   liftIO $ update (appEnvAcid env) e
 
 
+
+
+
+
+{-
+match specific overrides
+-}
+
+noWinningTeamIds :: [Int]
+noWinningTeamIds = [
+    16212164
+  , 16220337
+  , 16220355
+  , 16221436
+  , 16225891
+  , 16226590
+
+  ]
+
+
+matchVooblyIssue :: MatchId -> Maybe MatchFetchStatus
+matchVooblyIssue (MatchId i) =
+  if i `elem` noWinningTeamIds
+    then Just $ MatchFetchStatusVooblyIssue "No winning team"
+    else Nothing
+
+
+matchNumberOfPlayersOverride :: HM.HashMap MatchId Int
+matchNumberOfPlayersOverride = HM.fromList [
+    (MatchId 16210602, 3)
+  , (MatchId 16213743, 3)
+  , (MatchId 16220499, 2)
+  , (MatchId 16220547, 2)
+  ]
+
+
+matchOverrideNumberOfPlayers :: MatchId -> Maybe Int
+matchOverrideNumberOfPlayers mid = HM.lookup mid matchNumberOfPlayersOverride

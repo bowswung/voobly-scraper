@@ -62,7 +62,17 @@ defaultCivTups = [
   , (29, "Malay")
   , (30, "Burmese")
   , (31, "Vietnamese")
+  , (32, "VooblyCivError")
+  , (33, "VooblyCivError")
+  , (34, "VooblyCivError")
+  , (36, "VooblyCivError")
+  , (35, "VooblyCivError")
+  , (37, "VooblyCivError")
+  , (38, "VooblyCivError")
+  , (39, "VooblyCivError")
+  , (40, "VooblyCivError")
   , (46, "VooblyCivError")
+  , (47, "VooblyCivError")
   ]
 
 
@@ -151,6 +161,7 @@ data AppError =
   | AppErrorCommandFailure Text
   | AppErrorMissingCiv Text
   | AppErrorDBError Text
+  | AppErrorVooblyIssue Text
   deriving (Show, Eq, Ord, Typeable)
 instance Exception AppError
 
@@ -163,6 +174,10 @@ data MatchFetchStatus =
   | MatchFetchStatusVooblyIssue Text
   | MatchFetchStatusExceptionError AppError
   deriving (Eq, Ord, Show)
+
+isMatchFetchStatusExceptionError :: MatchFetchStatus -> Bool
+isMatchFetchStatusExceptionError (MatchFetchStatusExceptionError _) = True
+isMatchFetchStatusExceptionError _ = False
 
 instance NFData MatchFetchStatus where
   rnf MatchFetchStatusUntried = ()
@@ -200,10 +215,10 @@ makeSimpleIxSet "PlayerLadderProgressSet" ''PlayerLadderProgress ['playerLadderP
 
 data DB = DB {
   _dbCookies :: [Cookie]
-, _dbPlayers :: !PlayerSet
-, _dbPlayerLadders :: !PlayerLadderSet
-, _dbCivilisations :: !CivilisationSet
-, _dbMatches :: !MatchSet
+, _dbPlayers :: PlayerSet
+, _dbPlayerLadders :: PlayerLadderSet
+, _dbCivilisations :: CivilisationSet
+, _dbMatches :: MatchSet
 , _dbPlayerLadderProgress :: !PlayerLadderProgressSet
 , _dbMatchIds :: !(HM.HashMap MatchId MatchFetchStatus)
 }
