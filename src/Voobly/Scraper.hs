@@ -430,12 +430,12 @@ withThreads appEnv ioAct !t = do
             else \x ->  mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
       runnerWithMore = \x -> do
         runner x
-        putStrLn "***** CHECKPOINTING ACID AFTER 1000 tasks *****"
+        putStrLn "***** CHECKPOINTING ACID AFTER 5000 tasks *****"
         createCheckpoint (appEnvAcid appEnv)
         createArchive (appEnvAcid appEnv)
         putStrLn "***** CHECKPOINTING ACID COMPLETED *****"
 
-  liftIO $ mapM_ runnerWithMore $  vChunksOf 1000 t
+  liftIO $ mapM_ runnerWithMore $  vChunksOf 5000 t
   where
     catchAppError :: IO c -> IO ()
     catchAppError i = catch (void i) handleAnyException
@@ -698,7 +698,6 @@ extractMatchDuration t =
 
 extractMatchMap :: Text -> AppM Text
 extractMatchMap t = do
-  debugTextToFile t Nothing
   case doRegexJustCaptureGroups (T.unpack t) "<td style=\"[^\"]*\">Map:</td>\n<td style=\"[^\"]*\">([^<]+)</td>" of
     [x] -> return $ T.strip . T.pack $ x
     xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for match map but found " <> (utf8BuilderToText . displayShow $ xs)

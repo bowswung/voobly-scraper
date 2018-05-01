@@ -308,7 +308,7 @@ getMatchIds = L.view dbMatchIds <$> ask
 updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
 updateMatchId !a !b = do
   db <- get
-  let updatedMap =  HM.insert a b (_dbMatchIds db)
+  let updatedMap = force $ HM.insert a b (_dbMatchIds db)
   modify (L.set dbMatchIds updatedMap)
 
 
@@ -359,7 +359,7 @@ instance Csv.ToField Bool where
 
 instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
   getCopy = contain $ fmap HM.fromList safeGet
-  putCopy = contain . safePut . HM.toList
+  putCopy = contain . safePut . force HM.toList
 
 
 $(deriveSafeCopy 0 'base ''Cookie)
