@@ -272,7 +272,7 @@ addNewMatchIds pid matchIds = do
   case mp of
     Nothing -> return $ Just $ "Could not find player with id " <> (T.pack . show $ pid) <> " when updating match ids"
     Just p -> do
-      let newP = p{playerMatchIds = force $ Set.union (playerMatchIds p) (Set.fromList matchIds)}
+      let newP = p{playerMatchIds = Set.union (playerMatchIds p) (Set.fromList matchIds)}
       updatePlayer newP
       return Nothing
 
@@ -298,7 +298,7 @@ updateMatchIds ::  Update DB ()
 updateMatchIds = do
   db <- get
   let allMatchIds = Set.unions (map playerMatchIds $ IxSet.toList (_dbPlayers db))
-      updatedMap = force $ Set.foldr' (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ allMatchIds
+      updatedMap = Set.foldr' (insertDefaultHMIfAbsent MatchFetchStatusUntried) (_dbMatchIds db) $ allMatchIds
   modify (L.set dbMatchIds updatedMap)
 
 getMatchIds :: Query DB (HM.HashMap MatchId MatchFetchStatus)
@@ -308,7 +308,7 @@ getMatchIds = L.view dbMatchIds <$> ask
 updateMatchId :: MatchId -> MatchFetchStatus -> Update DB ()
 updateMatchId !a !b = do
   db <- get
-  let updatedMap = force $ HM.insert a b (_dbMatchIds db)
+  let updatedMap = HM.insert a b (_dbMatchIds db)
   modify (L.set dbMatchIds updatedMap)
 
 
@@ -359,7 +359,7 @@ instance Csv.ToField Bool where
 
 instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b) where
   getCopy = contain $ fmap HM.fromList safeGet
-  putCopy = contain . safePut . force HM.toList
+  putCopy = contain . safePut . HM.toList
 
 
 $(deriveSafeCopy 0 'base ''Cookie)

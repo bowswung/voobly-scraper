@@ -194,7 +194,7 @@ runScraper = do
 
           CommandRunErrors -> do
             matchIds <- query' GetMatchIds
-            let matchIdsToUpdate = L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds
+            let matchIdsToUpdate = zip (L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds) [0..]
             logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
             void $ mapM scrapeMatch matchIdsToUpdate
 
@@ -360,7 +360,7 @@ scrapeLadder l = do
           needsUpdate =
             case playerLadderProgressLastCompleted startProgress of
               Nothing -> True
-              Just d -> diffUTCTime now d  > (3600 * 24 * 7) -- every week
+              Just d -> diffUTCTime now d  > (3600 * 24 * 30) -- every month
       if needsUpdate
         then do
           tags <- makeHTMLTreesRequest $ ladderPageUrl l p
@@ -402,8 +402,8 @@ scrapePlayers = do
     else do
       db <- query' GetDB
       now <- getCurrentTime
-      let weekago = addUTCTime (-3600 * 24 * 7) now
-      let playersToUpdateBase = VB.fromList $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just weekago) $ _dbPlayers db
+      let timeago = addUTCTime (-3600 * 24 * 30) now
+      let playersToUpdateBase = VB.fromList $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just timeago) $ _dbPlayers db
           totalPlayers = IxSet.size $ _dbPlayers db
       appEnv <- ask
       playersToUpdate <- if (debug . appEnvOptions $  appEnv)
@@ -591,7 +591,7 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = force $ VB.fromList $ L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds
+  let matchIdsToUpdate = force $ VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
@@ -602,13 +602,13 @@ scrapeMatches = do
 matchPageUrl :: MatchId -> Text
 matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToInt mid)
 
-scrapeMatch :: MatchId -> AppM ()
-scrapeMatch mid =
+scrapeMatch :: (MatchId, Int) -> AppM ()
+scrapeMatch (mid, i) =
   case matchVooblyIssue mid of
     Just a -> do
       update' $ UpdateMatchId mid a
       logWarn $ "Voobly issue handled " <> displayShow a <> " for match " <> displayShow mid
-    Nothing -> MC.catch (doScrapeMatch mid) handleMatchError
+    Nothing -> MC.catch (doScrapeMatch (mid, i)) handleMatchError
   where
     handleMatchError :: AppError -> AppM ()
     handleMatchError (AppErrorVooblyIssue t) = do
@@ -626,9 +626,9 @@ scrapeMatch mid =
 
 
 
-doScrapeMatch :: MatchId -> AppM ()
-doScrapeMatch mid = do
-  logDebug $ "Scraping match " <> (displayShow . matchPageUrl $ mid)
+doScrapeMatch :: (MatchId, Int) -> AppM ()
+doScrapeMatch (mid, i) = do
+  logDebug $ "Task " <> (displayShow i) <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
   t <- makeTextRequest $ matchPageUrl mid
   ladder <- extractMatchLadder t
   case ladder of
