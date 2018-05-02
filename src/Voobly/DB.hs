@@ -119,16 +119,20 @@ data PlayerLadder = PlayerLadder {
 
 
 data Match = Match {
-  matchId :: MatchId,
-  matchDate :: UTCTime,
-  matchDuration :: DiffTime,
-  matchLadder :: Ladder,
-  matchMap :: Text,
-  matchMods :: [Text],
-  matchPlayers :: [MatchPlayer],
-  matchWinner :: Team
+  matchId :: !MatchId,
+  matchDate :: !UTCTime,
+  matchDuration :: !DiffTime,
+  matchLadder :: !Ladder,
+  matchMap :: !Text,
+  matchMods :: ![Text],
+  matchPlayers :: ![MatchPlayer],
+  matchWinner :: !Team
 } deriving (Eq, Ord, Show)
 
+instance NFData Ladder where
+  rnf _ = ()
+instance NFData Match where
+  rnf (Match{}) = ()
 data Civilisation = Civilisation {
   civilisationId :: CivilisationId,
   civilisationName :: Text
@@ -214,11 +218,11 @@ makeSimpleIxSet "PlayerLadderProgressSet" ''PlayerLadderProgress ['playerLadderP
 
 
 data DB = DB {
-  _dbCookies :: [Cookie]
-, _dbPlayers :: PlayerSet
-, _dbPlayerLadders :: PlayerLadderSet
-, _dbCivilisations :: CivilisationSet
-, _dbMatches :: MatchSet
+  _dbCookies :: ![Cookie]
+, _dbPlayers :: !PlayerSet
+, _dbPlayerLadders :: !PlayerLadderSet
+, _dbCivilisations :: !CivilisationSet
+, _dbMatches :: !MatchSet
 , _dbPlayerLadderProgress :: !PlayerLadderProgressSet
 , _dbMatchIds :: !(HM.HashMap MatchId MatchFetchStatus)
 }
@@ -319,7 +323,8 @@ updateCivilisation :: Civilisation -> Update DB ()
 updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisationId a) a))
 
 updateMatch :: Match -> Update DB ()
-updateMatch !a = modify (over dbMatches (IxSet.updateIx (matchId a) a))
+--updateMatch _ = return ()
+updateMatch !a = modify'  (over dbMatches ((IxSet.updateIx (matchId a) a )))
 
 
 deleteMatches :: Update DB ()

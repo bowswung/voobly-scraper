@@ -39,6 +39,8 @@ import qualified RIO.Set as Set
 import qualified Control.Monad.Catch as MC
 import qualified Control.Concurrent.QSem as S
 import System.IO(putStrLn)
+import qualified  Data.Conduit as  Cond
+import qualified  Data.Conduit.Combinators as  Cond
 
 
 data Command =
@@ -417,17 +419,21 @@ scrapePlayers = do
       liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapePlayer) playersToUpdate
 
 withThreads :: AppEnv -> (a -> IO ()) -> Vector a -> IO ()
-withThreads appEnv ioAct !t = do
+withThreads appEnv ioAct t = do
   let ioActWrapped = catchAppError . ioAct
 
   putStrLn $ T.unpack . utf8BuilderToText $ "*** Launching " <> (displayShow . VB.length $ t) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
 
-
+  let chunked =  vChunksOf 50 t
   let runner =
           if (debug . appEnvOptions $ appEnv)
             then \x -> VB.mapM_ (ioActWrapped) x
-            else \x ->  mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
-  liftIO $ mapM_ runner $  vChunksOf 500 t
+            else \x ->  do
+              putStrLn $ "**** STARTING CHUNK **** "
+              mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
+
+
+  liftIO $ Cond.runConduit (Cond.yieldMany chunked Cond..| Cond.mapM_ runner)
   where
     catchAppError :: IO c -> IO ()
     catchAppError i = catch (void i) handleAnyException
@@ -583,7 +589,7 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = force $ VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
+  let matchIdsToUpdate = VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
@@ -621,7 +627,9 @@ scrapeMatch (mid, i) =
 doScrapeMatch :: (MatchId, Int) -> AppM ()
 doScrapeMatch (mid, i) = do
   logDebug $ "Task " <> (displayShow i) <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
-  t <- makeTextRequest $ matchPageUrl mid
+
+  -- t <- makeTextRequest $ matchPageUrl mid
+  t <- fmap (decodeUtf8With ignore . BL.toStrict) $  BL.readFile (runDir <> "/sampleMatch.html")
   ladder <- extractMatchLadder t
   case ladder of
     Left l -> do
@@ -650,9 +658,9 @@ doScrapeMatch (mid, i) = do
           MatchPlayerError{} -> pure True
       if and knownPlayers
         then do
-
-          update' $ UpdateMatch match
+          --update' $ UpdateMatch match
           update' $ UpdateMatchId mid MatchFetchStatusComplete
+          logDebug $ "Match parsed:  " <> displayShow match
           logDebug $ "Inserted match with id " <> displayShow mid
           return ()
 
