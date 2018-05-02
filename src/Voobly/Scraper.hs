@@ -171,8 +171,8 @@ runScraper = do
       runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
-            _ <- liftIO $ execSchedule $ return ()
-              --addJob (stackToIO appEnv appState doCreateCheckpoint) "*/10 * * * *"
+            _ <- liftIO $ execSchedule $ do
+              addJob (stackToIO appEnv appState doCreateCheckpoint) "*/30 * * * *"
 
             initialise
             scrapeLadder LadderRm
