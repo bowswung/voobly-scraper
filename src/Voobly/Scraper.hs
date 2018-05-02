@@ -34,7 +34,7 @@ import Text.Regex.Posix ((=~))
 import qualified Safe as Safe
 import qualified Data.Proxy as Proxy
 --import Control.Concurrent.Async.Extra
---suimport System.Cron
+import System.Cron
 import qualified RIO.Set as Set
 import qualified Control.Monad.Catch as MC
 import qualified Control.Concurrent.QSem as S
@@ -169,9 +169,8 @@ runScraper = do
       runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
-            -- checkpointTask <- stackToIO doCreateCheckpoint
-            -- _ <- liftIO $ execSchedule $ do
-            -- addJob checkpointTask "5,20,35,50 * * * *"
+            _ <- liftIO $ execSchedule $ do
+              addJob (stackToIO appEnv appState doCreateCheckpoint) "*/10 * * * *"
 
             initialise
             scrapeLadder LadderRm
@@ -428,14 +427,7 @@ withThreads appEnv ioAct !t = do
           if (debug . appEnvOptions $ appEnv)
             then \x -> VB.mapM_ (ioActWrapped) x
             else \x ->  mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
-      runnerWithMore = \x -> do
-        runner x
-        putStrLn "***** CHECKPOINTING ACID AFTER 5000 tasks *****"
-        createCheckpoint (appEnvAcid appEnv)
-        createArchive (appEnvAcid appEnv)
-        putStrLn "***** CHECKPOINTING ACID COMPLETED *****"
-
-  liftIO $ mapM_ runnerWithMore $  vChunksOf 5000 t
+  liftIO $ mapM_ runner $  vChunksOf 500 t
   where
     catchAppError :: IO c -> IO ()
     catchAppError i = catch (void i) handleAnyException
