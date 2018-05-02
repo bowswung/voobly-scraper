@@ -645,8 +645,8 @@ doScrapeMatch (mid, i) = do
             , matchDate = date
             , matchDuration = duration
             , matchLadder = l
-            , matchMap = mapName
-            , matchMods = matchMods
+            , matchMap = T.copy mapName
+            , matchMods = map T.copy matchMods
             , matchPlayers = players
             , matchWinner = winningTeam
         }
@@ -867,7 +867,7 @@ type LadderRow = (Text, PlayerId, Int, Int, Int)
 
 updatePlayerLadders :: Ladder -> LadderRow -> AppM ()
 updatePlayerLadders l (name, pid, rating, wins, loss) = do
-  let p = Player pid name Set.empty Nothing
+  let p = Player pid (T.copy name) Set.empty Nothing
   update' $ UpdatePlayer p
   let pl = PlayerLadder{
              playerLadderPlayerId = pid
