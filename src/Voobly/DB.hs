@@ -21,9 +21,17 @@ import qualified Data.Csv as Csv
 import qualified RIO.Vector.Boxed as VB
 import qualified RIO.Set as Set
 
-newtype PlayerId = PlayerId {playerIdToText :: Text} deriving (Eq, Ord, Show)
-newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show)
-newtype CivilisationId = CivilisationId {civilisationIdToInt :: Int} deriving (Eq, Ord, Show)
+newtype PlayerId = PlayerId {playerIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
+
+instance Migrate PlayerId where
+  type MigrateFrom PlayerId = PlayerId_v0
+  migrate (PlayerId_v0 t) =
+    case Csv.runParser . Csv.parseField $ encodeUtf8 t of
+      Left err -> error $ "In migration " ++ err
+      Right i -> PlayerId i
+newtype PlayerId_v0 = PlayerId_v0 {v0_playerIdToText :: Text} deriving (Eq, Ord, Show, Generic)
+newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show, Generic)
+newtype CivilisationId = CivilisationId {civilisationIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
 newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable, NFData)
 
 defaultCivs :: [Civilisation]
@@ -77,11 +85,11 @@ defaultCivTups = [
 
 
 data Player = Player {
-  playerId :: PlayerId,
-  playerName :: Text,
+  playerId :: !PlayerId,
+  playerName :: !Text,
   playerMatchIds :: !(Set.Set MatchId),
-  playerLastCompletedUpdate :: Maybe UTCTime
-} deriving (Eq, Ord, Show)
+  playerLastCompletedUpdate :: !(Maybe UTCTime)
+} deriving (Eq, Ord, Show, Generic)
 
 instance Migrate Player where
   type MigrateFrom Player = Player_v0
@@ -103,18 +111,18 @@ data Player_v0 = Player_v0 {
 data Ladder =
     LadderRm
   | LadderRmTeam
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord, Show, Generic)
 
 ladderId :: Ladder -> Int
 ladderId LadderRm = 131
 ladderId LadderRmTeam = 132
 
 data PlayerLadder = PlayerLadder {
-  playerLadderPlayerId :: PlayerId,
-  playerLadderLadder :: Ladder,
-  playerLadderRating :: Int,
-  playerLadderWins  :: Int,
-  playerLadderLoss :: Int
+  playerLadderPlayerId :: !PlayerId,
+  playerLadderLadder :: !Ladder,
+  playerLadderRating :: !Int,
+  playerLadderWins  :: !Int,
+  playerLadderLoss :: !Int
 } deriving (Eq, Ord, Show)
 
 
@@ -127,25 +135,33 @@ data Match = Match {
   matchMods :: ![Text],
   matchPlayers :: ![MatchPlayer],
   matchWinner :: !Team
-} deriving (Eq, Ord, Show)
+} deriving (Eq, Ord, Show, Generic)
 
-instance NFData Ladder where
-  rnf _ = ()
-instance NFData Match where
-  rnf (Match{}) = ()
+instance NFData Ladder
+instance NFData Team
+instance NFData PlayerId
+instance NFData MatchPlayer
+instance NFData CivilisationId
+instance NFData MatchFetchStatus
+instance NFData AppError
+instance NFData Match
+instance NFData Player
+
+
+
 data Civilisation = Civilisation {
   civilisationId :: CivilisationId,
   civilisationName :: Text
 } deriving (Eq, Ord, Show)
 
 data MatchPlayer = MatchPlayer {
-  matchPlayerPlayerId :: PlayerId,
-  matchPlayerCiv :: CivilisationId,
-  matchPlayerPreRating :: Int,
-  matchPlayerPostRating :: Int,
-  matchPlayerTeam :: Team,
-  matchPlayerWon :: Bool
-} | MatchPlayerError Text deriving (Eq, Ord, Show)
+  matchPlayerPlayerId :: !PlayerId,
+  matchPlayerCiv :: !CivilisationId,
+  matchPlayerPreRating :: !Int,
+  matchPlayerPostRating :: !Int,
+  matchPlayerTeam :: !Team,
+  matchPlayerWon :: !Bool
+} | MatchPlayerError !Text deriving (Eq, Ord, Show, Generic)
 
 isMatchPlayerError :: MatchPlayer -> Bool
 isMatchPlayerError (MatchPlayerError _) = True
@@ -166,33 +182,23 @@ data AppError =
   | AppErrorMissingCiv Text
   | AppErrorDBError Text
   | AppErrorVooblyIssue Text
-  deriving (Show, Eq, Ord, Typeable)
+  deriving (Show, Eq, Ord, Typeable, Generic)
 instance Exception AppError
 
 
 data MatchFetchStatus =
     MatchFetchStatusUntried
   | MatchFetchStatusComplete
-  | MatchFetchStatusUnsupportedLadder Text
-  | MatchFetchStatusMissingPlayer UTCTime
-  | MatchFetchStatusVooblyIssue Text
-  | MatchFetchStatusExceptionError AppError
-  deriving (Eq, Ord, Show)
+  | MatchFetchStatusUnsupportedLadder !Text
+  | MatchFetchStatusMissingPlayer !UTCTime
+  | MatchFetchStatusVooblyIssue !Text
+  | MatchFetchStatusExceptionError !AppError
+  deriving (Eq, Ord, Show, Generic)
 
 isMatchFetchStatusExceptionError :: MatchFetchStatus -> Bool
 isMatchFetchStatusExceptionError (MatchFetchStatusExceptionError _) = True
 isMatchFetchStatusExceptionError _ = False
 
-instance NFData MatchFetchStatus where
-  rnf MatchFetchStatusUntried = ()
-  rnf MatchFetchStatusComplete = ()
-  rnf (MatchFetchStatusUnsupportedLadder t) = rnf t
-  rnf (MatchFetchStatusMissingPlayer t) = rnf t
-  rnf (MatchFetchStatusVooblyIssue t) = rnf t
-  rnf (MatchFetchStatusExceptionError _) = ()
-
-instance NFData Player where
-  rnf Player{} = ()
 
 
 instance Hashable MatchFetchStatus where
@@ -322,9 +328,19 @@ getCivilisation pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbCivilisation
 updateCivilisation :: Civilisation -> Update DB ()
 updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisationId a) a))
 
+getMatch :: MatchId -> Query DB (Maybe Match)
+getMatch pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbMatches <$> ask
+
 updateMatch :: Match -> Update DB ()
---updateMatch _ = return ()
-updateMatch !a = modify'  (over dbMatches ((IxSet.updateIx (matchId a) a )))
+updateMatch !a = modify'  (over dbMatches ((IxSet.updateIx (matchId a) a)))
+
+
+{-updateMatch !a = do
+  db <- get
+  let s = _dbMatches db
+      !b = IxSet.getOne . IxSet.getEQ (matchId a ) $ s
+  modify'  (over dbMatches (IxSet.getGT (MatchId 0)))
+  return b-}
 
 
 deleteMatches :: Update DB ()
@@ -343,7 +359,7 @@ instance Csv.ToField Team where
   toField = Csv.toField . teamToInt
 
 instance Csv.ToField PlayerId where
-  toField = Csv.toField . playerIdToText
+  toField = Csv.toField . playerIdToInt
 
 instance Csv.ToField [Text] where
   toField = Csv.toField . T.intercalate ", "
@@ -369,7 +385,8 @@ instance (SafeCopy a, Eq a, Hashable a, SafeCopy b) => SafeCopy (HM.HashMap a b)
 
 $(deriveSafeCopy 0 'base ''Cookie)
 $(deriveSafeCopy 0 'base ''DB)
-$(deriveSafeCopy 0 'base ''PlayerId)
+$(deriveSafeCopy 1 'extension ''PlayerId)
+$(deriveSafeCopy 0 'base ''PlayerId_v0)
 $(deriveSafeCopy 1 'extension ''Player)
 $(deriveSafeCopy 0 'base ''Player_v0)
 $(deriveSafeCopy 0 'base ''Ladder)
