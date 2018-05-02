@@ -39,6 +39,8 @@ import qualified RIO.Set as Set
 import qualified Control.Monad.Catch as MC
 import qualified Control.Concurrent.QSem as S
 import System.IO(putStrLn)
+import qualified  Data.Conduit as  Cond
+import qualified  Data.Conduit.Combinators as  Cond
 
 
 data Command =
@@ -116,7 +118,7 @@ newtype AppM a = AppM { extractAppM :: StateT AppState (RIO AppEnv) a}
 
 runAppM :: AppState -> AppM a -> RIO AppEnv a
 runAppM st act = do
-  (a, _) <- runStateT (extractAppM act) st
+  (!a, _) <- runStateT (extractAppM act) st
   return a
 
 instance HasLogFunc AppEnv where
@@ -169,8 +171,8 @@ runScraper = do
       runStack appEnv appState $ do
         case runCommand options of
           CommandRun -> do
-            _ <- liftIO $ execSchedule $ do
-              addJob (stackToIO appEnv appState doCreateCheckpoint) "*/10 * * * *"
+            _ <- liftIO $ execSchedule $ return ()
+              --addJob (stackToIO appEnv appState doCreateCheckpoint) "*/10 * * * *"
 
             initialise
             scrapeLadder LadderRm
@@ -417,17 +419,19 @@ scrapePlayers = do
       liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapePlayer) playersToUpdate
 
 withThreads :: AppEnv -> (a -> IO ()) -> Vector a -> IO ()
-withThreads appEnv ioAct !t = do
+withThreads appEnv ioAct t = do
   let ioActWrapped = catchAppError . ioAct
 
   putStrLn $ T.unpack . utf8BuilderToText $ "*** Launching " <> (displayShow . VB.length $ t) <> " actions with " <> displayShow (threadCount . appEnvOptions $ appEnv) <> " threads ***"
 
-
+  let chunked =  vChunksOf 250 t
   let runner =
           if (debug . appEnvOptions $ appEnv)
             then \x -> VB.mapM_ (ioActWrapped) x
-            else \x ->  mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
-  liftIO $ mapM_ runner $  vChunksOf 500 t
+            else \x -> mapConcurrentlyBounded_ (threadCount . appEnvOptions $ appEnv) ioActWrapped x
+
+
+  liftIO $ Cond.runConduit (Cond.yieldMany chunked Cond..| Cond.mapM_ runner)
   where
     catchAppError :: IO c -> IO ()
     catchAppError i = catch (void i) handleAnyException
@@ -464,7 +468,7 @@ withThreadsBatch act t = do
 
 
 playerMatchUrl :: Player -> Int -> Text
-playerMatchUrl p page = vooblyUrl <> "/profile/view/" <> (playerIdToText . playerId $ p) <> "/Matches/games/matches/user/" <> (playerIdToText . playerId $ p) <> "/0/" <> T.pack (show page)
+playerMatchUrl p page = vooblyUrl <> "/profile/view/" <> (T.pack . show . playerIdToInt . playerId $ p) <> "/Matches/games/matches/user/" <> (T.pack . show . playerIdToInt . playerId $ p) <> "/0/" <> T.pack (show page)
 
 divInt :: Int -> Int -> Double
 divInt = (/) `on` fromIntegral
@@ -583,7 +587,7 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = force $ VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
+  let matchIdsToUpdate = VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
@@ -621,7 +625,9 @@ scrapeMatch (mid, i) =
 doScrapeMatch :: (MatchId, Int) -> AppM ()
 doScrapeMatch (mid, i) = do
   logDebug $ "Task " <> (displayShow i) <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
+
   t <- makeTextRequest $ matchPageUrl mid
+  --t <- fmap (decodeUtf8With ignore . BL.toStrict) $  BL.readFile (runDir <> "/sampleMatch.html")
   ladder <- extractMatchLadder t
   case ladder of
     Left l -> do
@@ -633,7 +639,7 @@ doScrapeMatch (mid, i) = do
       mapName <- extractMatchMap t
       mapNumberOfPlayers <- extractMatchNumberOfPlayers mid t
       matchMods <- extractMatchMods t
-      (winningTeam, players) <- extractMapPlayers mapNumberOfPlayers t
+      (!winningTeam, !players) <- extractMapPlayers mapNumberOfPlayers t
       let match = Match {
               matchId = mid
             , matchDate = date
@@ -650,7 +656,6 @@ doScrapeMatch (mid, i) = do
           MatchPlayerError{} -> pure True
       if and knownPlayers
         then do
-
           update' $ UpdateMatch match
           update' $ UpdateMatchId mid MatchFetchStatusComplete
           logDebug $ "Inserted match with id " <> displayShow mid
@@ -660,8 +665,6 @@ doScrapeMatch (mid, i) = do
           now <- getCurrentTime
           update' $ UpdateMatchId mid (MatchFetchStatusMissingPlayer now)
           logWarn $ "Missing player in match " <> displayShow mid
-
-
 
 extractMatchLadder :: Text -> AppM (Either Text Ladder)
 extractMatchLadder t =
@@ -716,8 +719,8 @@ extractMapPlayers _expected t = do
   let psFound = length winT + length loseT
   if  psFound > 1 && psFound < 9
     then do
-      winners <- mapM (extractMatchPlayer True) winT
-      losers <- mapM (extractMatchPlayer False) loseT
+      !winners <- mapM (extractMatchPlayer True) winT
+      !losers <- mapM (extractMatchPlayer False) loseT
       case L.nub $ map matchPlayerTeam (filter (not . isMatchPlayerError) winners) of
         [] -> throwM $ AppErrorVooblyIssue "No winning team"
         [x] -> return (x, winners ++ losers)
@@ -736,23 +739,22 @@ isErrorComputerOrDeletedPlayer t =
 
 extractMatchPlayer :: Bool -> Tree P.Token -> AppM MatchPlayer
 extractMatchPlayer isWinner t = do
-  pNameTree <- playerNameTree
-  isErr <- isErrorComputerOrDeletedPlayer pNameTree
+  !pNameTree <- playerNameTree
+  !isErr <- isErrorComputerOrDeletedPlayer pNameTree
   if isErr
     then pure $ MatchPlayerError (treeToText pNameTree)
     else do
-      (_, playerId) <- extractNameAndIdFromToken pNameTree
-      civId <- extractCivFromTree
-      (oldRating, newRating, team) <- extractPlayerMatchRating
-
+      (_, !playerId) <- extractNameAndIdFromToken pNameTree
+      !civId <- extractCivFromTree
+      (!oldRating, !newRating, !team) <- extractPlayerMatchRating
       return MatchPlayer {
-          matchPlayerPlayerId = playerId
-        , matchPlayerCiv = civId
-        , matchPlayerPreRating = oldRating
-        , matchPlayerPostRating = newRating
-        , matchPlayerTeam = team
-        , matchPlayerWon = isWinner
-        }
+            matchPlayerPlayerId = playerId
+          , matchPlayerPreRating = oldRating
+          , matchPlayerPostRating = newRating
+          , matchPlayerCiv = civId
+          , matchPlayerTeam = team
+          , matchPlayerWon = isWinner
+          }
 
   where
 
@@ -900,16 +902,18 @@ extractNameAndIdFromToken :: Tree P.Token -> AppM (Text, PlayerId)
 extractNameAndIdFromToken t = do
   case Safe.lastMay $ extractFromTree t (isTagOpen "a") of
     Nothing -> throwM $ AppErrorInvalidHtml "Expected at least one a tag in extractNameAndIdFromToken"
-    Just aTree ->
+    Just !aTree ->
       case flatten $ replaceSpanWithContentText aTree  of
         (P.TagOpen _ attrs):(P.ContentText name):[] -> do
 
           case findAttributeValue "href" attrs of
             Nothing -> throwM $ AppErrorInvalidHtml "Expected href attribute in extractNameAndIdFromToken"
-            Just href -> do
+            Just !href -> do
               case Safe.lastMay $ T.split (== '/') href of
                 Nothing -> throwM $ AppErrorInvalidHtml "Expected multiple parts to url in extractNameAndIdFromToken"
-                Just tId -> return (name, PlayerId . T.strip $ tId)
+                Just tId -> do
+                  pid <- runParserFromText tId
+                  return (name, PlayerId pid)
 
 
 
