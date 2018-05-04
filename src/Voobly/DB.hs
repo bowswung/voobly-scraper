@@ -79,6 +79,7 @@ defaultCivTups = [
   , (38, "VooblyCivError")
   , (39, "VooblyCivError")
   , (40, "VooblyCivError")
+  , (41, "VooblyCivError")
   , (46, "VooblyCivError")
   , (47, "VooblyCivError")
   ]
