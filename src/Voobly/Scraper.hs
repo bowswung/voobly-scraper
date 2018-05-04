@@ -41,7 +41,7 @@ import qualified Control.Concurrent.QSem as S
 import System.IO(putStrLn)
 import qualified  Data.Conduit as  Cond
 import qualified  Data.Conduit.Combinators as  Cond
-
+import qualified  Data.Aeson as Aeson
 
 data Command =
     CommandRun
@@ -49,6 +49,9 @@ data Command =
   | CommandDump
   | CommandDeleteMatches
   | CommandRunErrors
+  | CommandDumpMatchJson
+  | CommandInsertMatchJson
+  | CommandInfo
 
 data Options = Options
   { username   :: Text
@@ -94,6 +97,10 @@ optionsParser = Options
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
      <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))
      <> command "runErrors"  (info (helper <*> pure CommandRunErrors)          (progDesc "Sequentially run matches that were previously errors."))
+     <> command "dumpMatchJson"  (info (helper <*> pure CommandDumpMatchJson)          (progDesc "Dump current match data to json"))
+     <> command "insertMatchJson"  (info (helper <*> pure CommandInsertMatchJson)          (progDesc "Insert match data from json"))
+     <> command "info"  (info (helper <*> pure CommandInfo)          (progDesc "Output information about state"))
+
       )
     )
 
@@ -198,6 +205,53 @@ runScraper = do
             let matchIdsToUpdate = zip (L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds) [0..]
             logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
             void $ mapM scrapeMatch matchIdsToUpdate
+
+          CommandDumpMatchJson -> do
+            db <- query' GetDB
+            let matches = IxSet.toList . _dbMatches $ db
+            logInfo $ "Dumping " <> (displayShow . length $ matches) <> " matches "
+            BL.writeFile (runDir <> "/matches.json") (Aeson.encode matches)
+
+          CommandInsertMatchJson -> do
+            bs <- BL.readFile (runDir <> "/matches.json")
+            case Aeson.eitherDecode' bs of
+              Left err -> logError $ "Decoding json failed with: " <> (displayShow $ err)
+              Right (as :: [Match]) -> do
+                logInfo $ "Inserting " <> (displayShow . length $ as) <> " matches "
+                void $ mapM (update' . UpdateMatch) as
+          CommandInfo -> do
+            db <- query' GetDB
+            logInfo $ "State information: "
+            logInfo $ (displayShow . IxSet.size $ _dbPlayers db) <> " players"
+            logInfo $ (displayShow . IxSet.size $ _dbPlayerLadders db) <> " player ladders"
+            logInfo $ (displayShow . HM.size $ _dbMatchIds db) <> " match ids"
+            logInfo $ "\nOF WHICH: \n"
+            let completedHashMap = HM.filter isMatchFetchStatusComplete $ _dbMatchIds db
+
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUntried $ _dbMatchIds db) <> " untried"
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUnsupportedLadder $ _dbMatchIds db) <> " unsupported ladder"
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMissingPlayer $ _dbMatchIds db) <> " missing player"
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusVooblyIssue $ _dbMatchIds db) <> " voobly issue"
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusExceptionError $ _dbMatchIds db) <> " exception error (can be retried)"
+            logInfo $ (displayShow . HM.size $ completedHashMap) <> " complete"
+
+            logInfo $ "\nThere are " <> (displayShow . IxSet.size $ _dbMatches db) <> " matches in the db \n"
+            logInfo $ "\nOF COMPLETED MATCH IDS: \n"
+            let (present, absent) = L.partition (\x -> isJust $ IxSet.getOne $ IxSet.getEQ x (_dbMatches db)) (HM.keys completedHashMap)
+
+            logInfo $ (displayShow . length $ present) <> " matches are present"
+            logInfo $ (displayShow . length $ absent) <> " matches are absent"
+
+            if (length present == HM.size completedHashMap)
+              then logInfo "Everything is looking ok"
+              else logError "There seems to be a mismatch!"
+
+
+
+
+
+
+
 
 
 dumpMatches :: AppM ()

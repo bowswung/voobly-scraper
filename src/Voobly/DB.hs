@@ -20,7 +20,7 @@ import Data.Hashable
 import qualified Data.Csv as Csv
 import qualified RIO.Vector.Boxed as VB
 import qualified RIO.Set as Set
-
+import Data.Aeson
 newtype PlayerId = PlayerId {playerIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
 
 instance Migrate PlayerId where
@@ -32,7 +32,7 @@ instance Migrate PlayerId where
 newtype PlayerId_v0 = PlayerId_v0 {v0_playerIdToText :: Text} deriving (Eq, Ord, Show, Generic)
 newtype Team = Team {teamToInt :: Int} deriving (Eq, Ord, Show, Generic)
 newtype CivilisationId = CivilisationId {civilisationIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
-newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable, NFData)
+newtype MatchId = MatchId {matchIdToInt :: Int} deriving (Eq, Ord, Show, Hashable, NFData, Generic)
 
 defaultCivs :: [Civilisation]
 defaultCivs = map (\(a,b) -> Civilisation (CivilisationId a) b) $ filter (\x -> (T.length . snd $ x) > 0) defaultCivTups
@@ -148,6 +148,23 @@ instance NFData AppError
 instance NFData Match
 instance NFData Player
 
+instance ToJSON Match
+instance ToJSON MatchId
+instance ToJSON Ladder
+instance ToJSON MatchPlayer
+instance ToJSON PlayerId
+instance ToJSON CivilisationId
+instance ToJSON Team
+instance FromJSON Match
+instance FromJSON MatchId
+instance FromJSON Ladder
+instance FromJSON MatchPlayer
+instance FromJSON PlayerId
+instance FromJSON CivilisationId
+instance FromJSON Team
+
+
+
 
 
 data Civilisation = Civilisation {
@@ -195,6 +212,27 @@ data MatchFetchStatus =
   | MatchFetchStatusVooblyIssue !Text
   | MatchFetchStatusExceptionError !AppError
   deriving (Eq, Ord, Show, Generic)
+
+
+isMatchFetchStatusUntried :: MatchFetchStatus -> Bool
+isMatchFetchStatusUntried (MatchFetchStatusUntried) = True
+isMatchFetchStatusUntried _ = False
+
+isMatchFetchStatusComplete :: MatchFetchStatus -> Bool
+isMatchFetchStatusComplete (MatchFetchStatusComplete) = True
+isMatchFetchStatusComplete _ = False
+
+isMatchFetchStatusUnsupportedLadder :: MatchFetchStatus -> Bool
+isMatchFetchStatusUnsupportedLadder (MatchFetchStatusUnsupportedLadder _) = True
+isMatchFetchStatusUnsupportedLadder _ = False
+
+isMatchFetchStatusMissingPlayer :: MatchFetchStatus -> Bool
+isMatchFetchStatusMissingPlayer (MatchFetchStatusMissingPlayer _) = True
+isMatchFetchStatusMissingPlayer _ = False
+
+isMatchFetchStatusVooblyIssue :: MatchFetchStatus -> Bool
+isMatchFetchStatusVooblyIssue (MatchFetchStatusVooblyIssue _) = True
+isMatchFetchStatusVooblyIssue _ = False
 
 isMatchFetchStatusExceptionError :: MatchFetchStatus -> Bool
 isMatchFetchStatusExceptionError (MatchFetchStatusExceptionError _) = True

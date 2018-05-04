@@ -42,7 +42,8 @@ library
     cron,
     deepseq,
     exceptions,
-    conduit
+    conduit,
+    aeson
 
   hs-source-dirs:      src
   ghc-options:         -Wall
