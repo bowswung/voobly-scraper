@@ -1,4 +1,4 @@
-## Voobly aoe scraper
+# Voobly aoe scraper
 This is a simple scraper for pulling in match data from voobly
 
 ## Data
@@ -6,45 +6,48 @@ This is a simple scraper for pulling in match data from voobly
 This repo also contains data obtained from running this scraper. Releases of data will be versioned to some extent. At the current time the following datasets are available. 
 
 | Version | File | Content | Ladders |
+| --- | --- | --- | --- |
 | 20180504 | | 648641 matches | RM 1v1, RM Team |
 
 ## Data structure
 For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns
 
-# MatchId
+### MatchId
 The id of the match on Voobly
-# MatchUrl
+### MatchUrl
 The url of the match on Voobly
-# MatchDate
+### MatchDate
 When the match was played
-# MatchDuration
+### MatchDuration
 How long the match was, in seconds
-# MatchLadder
+### MatchLadder
 Which ladder the match was played on
-# MatchMap
+### MatchMap
 Which map the match was played on
-# MatchMods
+### MatchMods
 Any match mods used, separated by commas
-# MatchPlayerId
+### MatchPlayerId
 The id of the player on Voobly
-# MatchPlayerName
+### MatchPlayerName
 The (most recently scraped) name of the player - may not be the same as the player name on the match url
-# MatchPlayerTeam
+### MatchPlayerTeam
 Which team the player was on
-# MatchPlayerCivId
+### MatchPlayerCivId
 The civ id of the match - a full list is available below
-# MatchPlayerCivName
+### MatchPlayerCivName
 The civ name
-# MatchPlayerWinner
+### MatchPlayerWinner
 Whether or not this player was a match winner (coded as 1 = Winner, 0 = Not winner)
-# MatchPlayerPreRating
+### MatchPlayerPreRating
 The rating of the player on the relevant ladder before the match
-# MatchPlayerPostRating
+### MatchPlayerPostRating
 The rating of the player on the relevant ladder after the match
 
 ## Civ ids
 These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. We label these civs as "VooblyCivError"
+
 | Id | Name |
+| --- | --- |
 | 1 | Britons
 | 2 | Franks
 | 3 | Goths
