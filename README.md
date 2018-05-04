@@ -7,7 +7,7 @@ This repo also contains data obtained from running this scraper. Releases of dat
 
 | Version | File | Content | Ladders |
 | --- | --- | --- | --- |
-| 20180504 | [matchDump.zip](data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team |
+| 20180504 | [matchDump.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team |
 
 ## Data structure
 For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns
