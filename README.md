@@ -91,5 +91,3 @@ These are the same as the ids Voobly uses to display civ images. Voobly has some
 | 41 | VooblyCivError
 | 46 | VooblyCivError
 | 47 | VooblyCivError
-
-## Version 0.1
