@@ -5,9 +5,9 @@ This is a simple scraper for pulling in match data from voobly
 
 This repo also contains data obtained from running this scraper. Releases of data will be versioned to some extent. At the current time the following datasets are available. 
 
-| Version | File | Content | Ladders |
-| --- | --- | --- | --- |
-| 20180504 | [matchDump.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team |
+| Version | File | Content | Ladders | Size (unzipped)
+| --- | --- | --- | --- | --- |
+| 20180504 | [matchDump.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team | 404 MB |
 
 ## Data structure
 For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns
