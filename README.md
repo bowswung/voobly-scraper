@@ -10,7 +10,7 @@ This repo also contains data obtained from running this scraper. Releases of dat
 | 20180504 | [matchDump.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team | 57MB / 404MB |
 
 ## Data structure
-For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns
+For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns. For some matches Voobly does not have the data for one or more players, and in these cases all of the MatchPlayer values are filled in with "*VooblyErrorPlayerNotFound*".
 
 ### MatchId
 The id of the match on Voobly
@@ -44,7 +44,7 @@ The rating of the player on the relevant ladder before the match
 The rating of the player on the relevant ladder after the match
 
 ## Civ ids
-These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. We label these civs as "VooblyCivError"
+These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. This seems to be due to a use of incompatible mods (WK with UP 1.4 for example). We label these civs as "VooblyCivError"
 
 | Id | Name |
 | --- | --- |

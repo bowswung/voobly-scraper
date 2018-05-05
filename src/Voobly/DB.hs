@@ -411,7 +411,7 @@ instance Csv.ToField DiffTime where
   toField dt = Csv.toField $ ((round  (fromIntegral (diffTimeToPicoseconds dt) / (10^(12 :: Integer) :: Double))) :: Int)
 
 instance Csv.ToField UTCTime where
-  toField dt = Csv.toField $ formatTime defaultTimeLocale rfc822DateFormat dt
+  toField dt = Csv.toField $ formatTime defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%S")) dt
 
 instance Csv.ToField Bool where
   toField True = "1"

@@ -47,6 +47,7 @@ data Command =
     CommandRun
   | CommandQuery
   | CommandDump
+  | CommandDumpWithoutErrors
   | CommandDeleteMatches
   | CommandRunErrors
   | CommandDumpMatchJson
@@ -95,6 +96,7 @@ optionsParser = Options
       ( command "run"          (info (helper <*> pure CommandRun)                 (progDesc "Run the scraper" ))
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
+     <> command "dumpWithoutErrors"  (info (helper <*> pure CommandDumpWithoutErrors)          (progDesc "Dump data"))
      <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))
      <> command "runErrors"  (info (helper <*> pure CommandRunErrors)          (progDesc "Sequentially run matches that were previously errors."))
      <> command "dumpMatchJson"  (info (helper <*> pure CommandDumpMatchJson)          (progDesc "Dump current match data to json"))
@@ -194,7 +196,10 @@ runScraper = do
             logDebug $ displayShow $ take 20 (IxSet.toList $ _dbPlayers db)
 
           CommandDump -> do
-            dumpMatches
+            dumpMatches False
+
+          CommandDumpWithoutErrors -> do
+            dumpMatches True
 
           CommandDeleteMatches -> do
             update' DeleteMatches
@@ -254,12 +259,21 @@ runScraper = do
 
 
 
-dumpMatches :: AppM ()
-dumpMatches = do
+
+
+dumpMatches :: Bool -> AppM ()
+dumpMatches excludeErrors = do
   db <- query' GetDB
   let civMap = HM.fromList $ (map (\c -> (civilisationId c, Csv.toField . civilisationName $ c))) (IxSet.toList ._dbCivilisations $ db)
-  rendered <- fmap concat $ mapM (renderMatch civMap) $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) (_dbMatches db)
-  logInfo $ "Dumping " <> (displayShow . IxSet.size $ _dbMatches db) <> " matches in "  <> (displayShow . length $ rendered) <> " rows to csv"
+
+  let baseMatches = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) (_dbMatches db)
+
+  let matchesToInclude =
+        if excludeErrors
+          then filter (not . isErrorMatch) baseMatches
+          else baseMatches
+  rendered <- fmap concat $ mapM (renderMatch civMap) $ matchesToInclude
+  logInfo $ "Dumping " <> (displayShow . length $ matchesToInclude) <> " matches in "  <> (displayShow . length $ rendered) <> " rows to csv"
   let enc = Csv.encodeByNameWith Csv.defaultEncodeOptions headerDef rendered
   let fname = runDir <> "/matchDump.csv"
   BL.writeFile fname enc
@@ -283,6 +297,8 @@ dumpMatches = do
       "MatchPlayerPreRating",
       "MatchPlayerPostRating"
       ]
+    isErrorMatch :: Match -> Bool
+    isErrorMatch m = or $ map (isMatchPlayerError) (matchPlayers m)
 
     renderMatch ::HM.HashMap CivilisationId ByteString -> Match -> AppM [Csv.NamedRecord]
     renderMatch civMap Match{..} = do
