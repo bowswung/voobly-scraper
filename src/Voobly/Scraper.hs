@@ -188,8 +188,6 @@ runScraper = do
             _ <- liftIO $ execSchedule $ do return ()
               --addJob (stackToIO appEnv appState doCreateCheckpoint) "*/30 * * * *"
 
-            doScrapeMatch (MatchId 1, 1)
-            {-
             initialise
             scrapeLadder LadderRm
             scrapeLadder LadderRmTeam
@@ -197,7 +195,7 @@ runScraper = do
             scrapeLadder LadderDmTeam
             scrapePlayers
             scrapeMatches
--}
+
 
           CommandQuery -> do
             db <- query' GetDB
@@ -251,6 +249,7 @@ runScraper = do
 
             logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMissingPlayer $ _dbMatchIds db) <> " missing player"
             logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusVooblyIssue $ _dbMatchIds db) <> " voobly issue"
+            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMatchPageNotFound $ _dbMatchIds db) <> " matches not found (too old probably)"
             logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusExceptionError $ _dbMatchIds db) <> " exception error (can be retried)"
             logInfo $ (displayShow . HM.size $ completedHashMap) <> " complete"
 
@@ -277,16 +276,17 @@ runScraper = do
             void $ (flip mapM) (HM.keys matching) $ \mid -> do
               update' $ UpdateMatchId mid MatchFetchStatusUntried
 
-          CommandResetMatchStatusForMissingPlayers -> do
-            db <- query' GetDB
-            let matching = HM.filter isMatchFetchStatusMissingPlayer (_dbMatchIds db)
-            logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
-            void $ (flip mapM) (HM.keys matching) $ \mid -> do
-              update' $ UpdateMatchId mid MatchFetchStatusUntried
+          CommandResetMatchStatusForMissingPlayers -> resetMatchStatusForMissingPlayers
 
 
 
-
+resetMatchStatusForMissingPlayers :: AppM ()
+resetMatchStatusForMissingPlayers = do
+  db <- query' GetDB
+  let matching = HM.filter isMatchFetchStatusMissingPlayer (_dbMatchIds db)
+  logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
+  void $ (flip mapM) (HM.keys matching) $ \mid -> do
+    update' $ UpdateMatchId mid MatchFetchStatusUntried
 
 
 
@@ -465,6 +465,8 @@ scrapeLadder l = do
               Just d -> diffUTCTime now d  > (3600 * 24 * 29) -- every month
       if needsUpdate
         then do
+          -- clear any matches that were missing players, as we might get them now!
+          resetMatchStatusForMissingPlayers
           tags <- makeHTMLTreesRequest $ ladderPageUrl l p
           table <- extractLadderTable tags
           let rows = drop 1 $ extractFromTree table (isTagOpen "tr")
@@ -720,7 +722,7 @@ scrapeMatches = do
 
   doUpdateMatchIds
   matchIds <- query' GetMatchIds
-  let matchIdsToUpdate = VB.fromList $ take 1 $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
+  let matchIdsToUpdate = VB.fromList $ zip (L.sort . HM.keys $ HM.filter (== MatchFetchStatusUntried) matchIds) [0..]
 
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
@@ -743,6 +745,9 @@ scrapeMatch (mid, i) =
     handleMatchError (AppErrorVooblyIssue t) = do
       logWarn $ "Caught AppErrorVooblyIssue when updating match " <> displayShow mid <> ": " <> displayShow t
       update' $ UpdateMatchId mid (MatchFetchStatusVooblyIssue t)
+    handleMatchError (AppErrorMatchPageNotFound ) = do
+      logWarn $ "Caught AppErrorMatchPageNotFound when updating match " <> displayShow mid
+      update' $ UpdateMatchId mid (MatchFetchStatusMatchPageNotFound)
 
     handleMatchError e = do
       logError $ "Caught AppError when updating match " <> displayShow mid <> ": " <> displayShow e
@@ -752,6 +757,8 @@ scrapeMatch (mid, i) =
 
 
 
+isPageNotFound :: Text -> Bool
+isPageNotFound t = not . null $ doRegex (T.unpack t) "<div class=\"page-title\">Page Not Found</div>"
 
 
 
@@ -759,8 +766,9 @@ doScrapeMatch :: (MatchId, Int) -> AppM ()
 doScrapeMatch (mid, i) = do
   logDebug $ "Task " <> (displayShow i) <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
 
-  --t <- makeTextRequest $ matchPageUrl mid
-  t <- fmap (decodeUtf8With ignore . BL.toStrict) $  BL.readFile (runDir <> "/sampleMatch.html")
+  t <- makeTextRequest $ matchPageUrl mid
+  when (isPageNotFound t) $ throwM AppErrorMatchPageNotFound
+  --t <- fmap (decodeUtf8With ignore . BL.toStrict) $  BL.readFile (runDir <> "/sampleMatch.html")
   ladder <- extractMatchLadder t
   case ladder of
     Left l -> do
@@ -790,7 +798,6 @@ doScrapeMatch (mid, i) = do
       if and knownPlayers
         then do
           update' $ UpdateMatch match
-          update' $ UpdateMatchId mid MatchFetchStatusComplete
           logDebug $ "Inserted match with id " <> displayShow mid
           return ()
 
@@ -882,6 +889,8 @@ isErrorComputerOrDeletedPlayer t =
     Nothing -> pure $ not . null $ doRegexJustCaptureGroups (T.unpack . treeToText $ t) "(Computer)"
     Just _ -> pure False
 
+displayShowT ::  Show a => a -> Text
+displayShowT = utf8BuilderToText . displayShow
 
 extractMatchPlayer :: Text -> Bool -> Tree P.Token -> AppM MatchPlayer
 extractMatchPlayer completeText isWinner t = do
@@ -893,9 +902,7 @@ extractMatchPlayer completeText isWinner t = do
       (name, !playerId) <- extractNameAndIdFromToken pNameTree
       !civId <- extractCivFromTree
       (!oldRating, !newRating, !team) <- extractPlayerMatchRating
-      recording <- extractPlayerRecording name
-      logWarn $ displayShow name
-      logWarn $ displayShow recording
+      !recording <- extractPlayerRecording name
       return MatchPlayer {
             matchPlayerPlayerId = playerId
           , matchPlayerPreRating = oldRating
@@ -903,16 +910,17 @@ extractMatchPlayer completeText isWinner t = do
           , matchPlayerCiv = civId
           , matchPlayerTeam = team
           , matchPlayerWon = isWinner
-          , matchPlayerRecording = name
+          , matchPlayerRecording = recording
           }
 
   where
     extractPlayerRecording :: Text -> AppM (Maybe Text)
     extractPlayerRecording name = do
-       let reg = "<<a href=\"([^\"]+)\">[^>]*Download Rec. from <b>[^<]*" ++ T.unpack name ++ "</b></a>"
+       let reg = "<a href='([^']+)'>[^<]*Download Rec. from <b>[^<]*" ++ T.unpack name ++ "</b></a>"
        case doRegexJustCaptureGroups (T.unpack completeText) reg of
-        [x] -> return . T.pack x
-        xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for extractPlayerRecording" <> displayShow xs
+        [x] -> return . Just . T.copy $ vooblyUrl <> T.pack x
+        [] -> return Nothing
+        xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for extractPlayerRecording, found " <> displayShowT xs <>  " with regex " <> displayShowT reg
 
     extractPlayerMatchRating :: AppM (Int, Int, Team)
     extractPlayerMatchRating = do

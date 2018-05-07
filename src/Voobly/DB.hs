@@ -231,6 +231,7 @@ data AppError =
   | AppErrorMissingCiv Text
   | AppErrorDBError Text
   | AppErrorVooblyIssue Text
+  | AppErrorMatchPageNotFound
   deriving (Show, Eq, Ord, Typeable, Generic)
 instance Exception AppError
 
@@ -242,6 +243,7 @@ data MatchFetchStatus =
   | MatchFetchStatusMissingPlayer !UTCTime
   | MatchFetchStatusVooblyIssue !Text
   | MatchFetchStatusExceptionError !AppError
+  | MatchFetchStatusMatchPageNotFound
   deriving (Eq, Ord, Show, Generic)
 
 maybeUnsupportedLadder :: MatchFetchStatus -> Maybe Text
@@ -271,6 +273,10 @@ isMatchFetchStatusVooblyIssue _ = False
 isMatchFetchStatusExceptionError :: MatchFetchStatus -> Bool
 isMatchFetchStatusExceptionError (MatchFetchStatusExceptionError _) = True
 isMatchFetchStatusExceptionError _ = False
+
+isMatchFetchStatusMatchPageNotFound :: MatchFetchStatus -> Bool
+isMatchFetchStatusMatchPageNotFound (MatchFetchStatusMatchPageNotFound) = True
+isMatchFetchStatusMatchPageNotFound _ = False
 
 
 
@@ -405,7 +411,9 @@ getMatch :: MatchId -> Query DB (Maybe Match)
 getMatch pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbMatches <$> ask
 
 updateMatch :: Match -> Update DB ()
-updateMatch !a = modify'  (over dbMatches ((IxSet.updateIx (matchId a) a)))
+updateMatch !a = do
+  modify'  (over dbMatches ((IxSet.updateIx (matchId a) a)))
+  updateMatchId (matchId a) MatchFetchStatusComplete
 
 
 {-updateMatch !a = do
