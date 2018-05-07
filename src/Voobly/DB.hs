@@ -112,11 +112,15 @@ data Player_v0 = Player_v0 {
 data Ladder =
     LadderRm
   | LadderRmTeam
+  | LadderDm
+  | LadderDmTeam
   deriving (Eq, Ord, Show, Generic)
 
 ladderId :: Ladder -> Int
 ladderId LadderRm = 131
 ladderId LadderRmTeam = 132
+ladderId LadderDm = 162
+ladderId LadderDmTeam = 163
 
 data PlayerLadder = PlayerLadder {
   playerLadderPlayerId :: !PlayerId,
@@ -172,14 +176,41 @@ data Civilisation = Civilisation {
   civilisationName :: Text
 } deriving (Eq, Ord, Show)
 
+
 data MatchPlayer = MatchPlayer {
   matchPlayerPlayerId :: !PlayerId,
   matchPlayerCiv :: !CivilisationId,
   matchPlayerPreRating :: !Int,
   matchPlayerPostRating :: !Int,
   matchPlayerTeam :: !Team,
-  matchPlayerWon :: !Bool
+  matchPlayerWon :: !Bool,
+  matchPlayerRecording :: !(Maybe Text)
 } | MatchPlayerError !Text deriving (Eq, Ord, Show, Generic)
+
+instance Migrate MatchPlayer where
+  type MigrateFrom MatchPlayer = MatchPlayer_v0
+  migrate MatchPlayer_v0{..} = MatchPlayer{
+     matchPlayerPlayerId   = v0_matchPlayerPlayerId
+   , matchPlayerCiv        = v0_matchPlayerCiv
+   , matchPlayerPreRating  = v0_matchPlayerPreRating
+   , matchPlayerPostRating = v0_matchPlayerPostRating
+   , matchPlayerTeam       = v0_matchPlayerTeam
+   , matchPlayerWon        = v0_matchPlayerWon
+   , matchPlayerRecording  = Nothing
+
+
+
+  }
+  migrate (MatchPlayerError_v0 t) = MatchPlayerError t
+
+data MatchPlayer_v0 = MatchPlayer_v0 {
+  v0_matchPlayerPlayerId :: !PlayerId,
+  v0_matchPlayerCiv :: !CivilisationId,
+  v0_matchPlayerPreRating :: !Int,
+  v0_matchPlayerPostRating :: !Int,
+  v0_matchPlayerTeam :: !Team,
+  v0_matchPlayerWon :: !Bool
+} | MatchPlayerError_v0 !Text deriving (Eq, Ord, Show, Generic)
 
 isMatchPlayerError :: MatchPlayer -> Bool
 isMatchPlayerError (MatchPlayerError _) = True
@@ -200,6 +231,7 @@ data AppError =
   | AppErrorMissingCiv Text
   | AppErrorDBError Text
   | AppErrorVooblyIssue Text
+  | AppErrorMatchPageNotFound
   deriving (Show, Eq, Ord, Typeable, Generic)
 instance Exception AppError
 
@@ -211,8 +243,12 @@ data MatchFetchStatus =
   | MatchFetchStatusMissingPlayer !UTCTime
   | MatchFetchStatusVooblyIssue !Text
   | MatchFetchStatusExceptionError !AppError
+  | MatchFetchStatusMatchPageNotFound
   deriving (Eq, Ord, Show, Generic)
 
+maybeUnsupportedLadder :: MatchFetchStatus -> Maybe Text
+maybeUnsupportedLadder (MatchFetchStatusUnsupportedLadder t) = Just t
+maybeUnsupportedLadder _ = Nothing
 
 isMatchFetchStatusUntried :: MatchFetchStatus -> Bool
 isMatchFetchStatusUntried (MatchFetchStatusUntried) = True
@@ -237,6 +273,10 @@ isMatchFetchStatusVooblyIssue _ = False
 isMatchFetchStatusExceptionError :: MatchFetchStatus -> Bool
 isMatchFetchStatusExceptionError (MatchFetchStatusExceptionError _) = True
 isMatchFetchStatusExceptionError _ = False
+
+isMatchFetchStatusMatchPageNotFound :: MatchFetchStatus -> Bool
+isMatchFetchStatusMatchPageNotFound (MatchFetchStatusMatchPageNotFound) = True
+isMatchFetchStatusMatchPageNotFound _ = False
 
 
 
@@ -371,7 +411,9 @@ getMatch :: MatchId -> Query DB (Maybe Match)
 getMatch pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbMatches <$> ask
 
 updateMatch :: Match -> Update DB ()
-updateMatch !a = modify'  (over dbMatches ((IxSet.updateIx (matchId a) a)))
+updateMatch !a = do
+  modify'  (over dbMatches ((IxSet.updateIx (matchId a) a)))
+  updateMatchId (matchId a) MatchFetchStatusComplete
 
 
 {-updateMatch !a = do
@@ -406,6 +448,8 @@ instance Csv.ToField [Text] where
 instance Csv.ToField Ladder where
   toField LadderRm = Csv.toField $ ("RM - 1v1" :: Text)
   toField LadderRmTeam = Csv.toField $ ("RM - Team" :: Text)
+  toField LadderDm = Csv.toField $ ("DM - 1v1" :: Text)
+  toField LadderDmTeam = Csv.toField $ ("DM - Team" :: Text)
 
 instance Csv.ToField DiffTime where
   toField dt = Csv.toField $ ((round  (fromIntegral (diffTimeToPicoseconds dt) / (10^(12 :: Integer) :: Double))) :: Int)
@@ -434,7 +478,8 @@ $(deriveSafeCopy 0 'base ''Team)
 $(deriveSafeCopy 0 'base ''CivilisationId)
 $(deriveSafeCopy 0 'base ''Match)
 $(deriveSafeCopy 0 'base ''Civilisation)
-$(deriveSafeCopy 0 'base ''MatchPlayer)
+$(deriveSafeCopy 1 'extension ''MatchPlayer)
+$(deriveSafeCopy 0 'base ''MatchPlayer_v0)
 $(deriveSafeCopy 0 'base ''MatchId)
 $(deriveSafeCopy 0 'base ''PlayerLadderProgress)
 $(deriveSafeCopy 0 'base ''MatchFetchStatus)

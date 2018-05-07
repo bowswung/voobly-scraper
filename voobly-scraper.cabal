@@ -1,5 +1,5 @@
 name:                voobly-scraper
-version:             0.1.0.0
+version:             0.1.1
 synopsis:            Voobly scraper
 description:         Please see README.md
 homepage:            http://github.com/bowswung/voobly-scraper#readme
@@ -43,7 +43,8 @@ library
     deepseq,
     exceptions,
     conduit,
-    aeson
+    aeson,
+    extra
 
   hs-source-dirs:      src
   ghc-options:         -Wall
