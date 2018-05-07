@@ -112,11 +112,15 @@ data Player_v0 = Player_v0 {
 data Ladder =
     LadderRm
   | LadderRmTeam
+  | LadderDm
+  | LadderDmTeam
   deriving (Eq, Ord, Show, Generic)
 
 ladderId :: Ladder -> Int
 ladderId LadderRm = 131
 ladderId LadderRmTeam = 132
+ladderId LadderDm = 162
+ladderId LadderDmTeam = 163
 
 data PlayerLadder = PlayerLadder {
   playerLadderPlayerId :: !PlayerId,
@@ -213,6 +217,9 @@ data MatchFetchStatus =
   | MatchFetchStatusExceptionError !AppError
   deriving (Eq, Ord, Show, Generic)
 
+maybeUnsupportedLadder :: MatchFetchStatus -> Maybe Text
+maybeUnsupportedLadder (MatchFetchStatusUnsupportedLadder t) = Just t
+maybeUnsupportedLadder _ = Nothing
 
 isMatchFetchStatusUntried :: MatchFetchStatus -> Bool
 isMatchFetchStatusUntried (MatchFetchStatusUntried) = True
@@ -406,6 +413,8 @@ instance Csv.ToField [Text] where
 instance Csv.ToField Ladder where
   toField LadderRm = Csv.toField $ ("RM - 1v1" :: Text)
   toField LadderRmTeam = Csv.toField $ ("RM - Team" :: Text)
+  toField LadderDm = Csv.toField $ ("DM - 1v1" :: Text)
+  toField LadderDmTeam = Csv.toField $ ("DM - Team" :: Text)
 
 instance Csv.ToField DiffTime where
   toField dt = Csv.toField $ ((round  (fromIntegral (diffTimeToPicoseconds dt) / (10^(12 :: Integer) :: Double))) :: Int)
