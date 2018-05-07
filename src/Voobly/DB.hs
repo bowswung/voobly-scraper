@@ -176,14 +176,41 @@ data Civilisation = Civilisation {
   civilisationName :: Text
 } deriving (Eq, Ord, Show)
 
+
 data MatchPlayer = MatchPlayer {
   matchPlayerPlayerId :: !PlayerId,
   matchPlayerCiv :: !CivilisationId,
   matchPlayerPreRating :: !Int,
   matchPlayerPostRating :: !Int,
   matchPlayerTeam :: !Team,
-  matchPlayerWon :: !Bool
+  matchPlayerWon :: !Bool,
+  matchPlayerRecording :: !(Maybe Text)
 } | MatchPlayerError !Text deriving (Eq, Ord, Show, Generic)
+
+instance Migrate MatchPlayer where
+  type MigrateFrom MatchPlayer = MatchPlayer_v0
+  migrate MatchPlayer_v0{..} = MatchPlayer{
+     matchPlayerPlayerId   = v0_matchPlayerPlayerId
+   , matchPlayerCiv        = v0_matchPlayerCiv
+   , matchPlayerPreRating  = v0_matchPlayerPreRating
+   , matchPlayerPostRating = v0_matchPlayerPostRating
+   , matchPlayerTeam       = v0_matchPlayerTeam
+   , matchPlayerWon        = v0_matchPlayerWon
+   , matchPlayerRecording  = Nothing
+
+
+
+  }
+  migrate (MatchPlayerError_v0 t) = MatchPlayerError t
+
+data MatchPlayer_v0 = MatchPlayer_v0 {
+  v0_matchPlayerPlayerId :: !PlayerId,
+  v0_matchPlayerCiv :: !CivilisationId,
+  v0_matchPlayerPreRating :: !Int,
+  v0_matchPlayerPostRating :: !Int,
+  v0_matchPlayerTeam :: !Team,
+  v0_matchPlayerWon :: !Bool
+} | MatchPlayerError_v0 !Text deriving (Eq, Ord, Show, Generic)
 
 isMatchPlayerError :: MatchPlayer -> Bool
 isMatchPlayerError (MatchPlayerError _) = True
@@ -443,7 +470,8 @@ $(deriveSafeCopy 0 'base ''Team)
 $(deriveSafeCopy 0 'base ''CivilisationId)
 $(deriveSafeCopy 0 'base ''Match)
 $(deriveSafeCopy 0 'base ''Civilisation)
-$(deriveSafeCopy 0 'base ''MatchPlayer)
+$(deriveSafeCopy 1 'extension ''MatchPlayer)
+$(deriveSafeCopy 0 'base ''MatchPlayer_v0)
 $(deriveSafeCopy 0 'base ''MatchId)
 $(deriveSafeCopy 0 'base ''PlayerLadderProgress)
 $(deriveSafeCopy 0 'base ''MatchFetchStatus)
