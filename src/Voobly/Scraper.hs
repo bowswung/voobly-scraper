@@ -297,7 +297,7 @@ dumpMatches excludeErrors = do
   db <- query' GetDB
   let civMap = HM.fromList $ (map (\c -> (civilisationId c, Csv.toField . civilisationName $ c))) (IxSet.toList ._dbCivilisations $ db)
 
-  let baseMatches = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) (_dbMatches db)
+  let baseMatches = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) $ (_dbMatches db)
 
   let matchesToInclude =
         if excludeErrors
@@ -326,7 +326,8 @@ dumpMatches excludeErrors = do
       "MatchPlayerCivName",
       "MatchPlayerWinner",
       "MatchPlayerPreRating",
-      "MatchPlayerPostRating"
+      "MatchPlayerPostRating",
+      "MatchPlayerRecording"
       ]
     isErrorMatch :: Match -> Bool
     isErrorMatch m = or $ map (isMatchPlayerError) (matchPlayers m)
@@ -357,7 +358,8 @@ dumpMatches excludeErrors = do
                 "MatchPlayerCivName" Csv..= civName,
                 "MatchPlayerWinner" Csv..= matchPlayerWon,
                 "MatchPlayerPreRating" Csv..= matchPlayerPreRating,
-                "MatchPlayerPostRating" Csv..= matchPlayerPostRating
+                "MatchPlayerPostRating" Csv..= matchPlayerPostRating,
+                "MatchPlayerRecording" Csv..= matchPlayerRecording
               ]
 
           MatchPlayerError t -> do
@@ -370,7 +372,8 @@ dumpMatches excludeErrors = do
                 "MatchPlayerCivName" Csv..= errorName,
                 "MatchPlayerWinner" Csv..= errorName,
                 "MatchPlayerPreRating" Csv..= errorName,
-                "MatchPlayerPostRating" Csv..= errorName
+                "MatchPlayerPostRating" Csv..= errorName,
+                "MatchPlayerRecording" Csv..= errorName
               ]
 
 
