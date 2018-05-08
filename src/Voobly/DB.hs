@@ -21,6 +21,7 @@ import qualified Data.Csv as Csv
 import qualified RIO.Vector.Boxed as VB
 import qualified RIO.Set as Set
 import Data.Aeson
+
 newtype PlayerId = PlayerId {playerIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
 
 instance Migrate PlayerId where
@@ -423,6 +424,9 @@ insertDefaultHMIfAbsent b a m =
     Nothing -> HM.insert a b m
     Just _ -> m
 
+displayShowT ::  Show a => a -> Text
+displayShowT = utf8BuilderToText . displayShow
+
 
 updateMatchIds ::  Update DB ()
 updateMatchIds = do
@@ -450,6 +454,29 @@ updateCivilisation a = modify (over dbCivilisations (IxSet.updateIx (civilisatio
 
 getMatch :: MatchId -> Query DB (Maybe Match)
 getMatch pid = (IxSet.getOne . IxSet.getEQ pid) <$> L.view dbMatches <$> ask
+
+updateMatchPlayer :: MatchId -> MatchPlayer -> Update DB (Maybe Text)
+updateMatchPlayer mid mpl = do
+  match <- liftQuery $ getMatch mid
+  case match of
+    Nothing -> return . Just $ "Match not found for id " <> displayShowT mid
+    Just m -> do
+      case replaceMatchPlayer m of
+        Left err -> return . Just $ err
+        Right newM -> do
+          modify'  (over dbMatches ((IxSet.updateIx (matchId newM) newM)))
+          return Nothing
+
+
+
+  where
+    replaceMatchPlayer :: Match -> Either Text Match
+    replaceMatchPlayer m = do
+      let p = \x -> matchPlayerPlayerId mpl ==  matchPlayerPlayerId x
+      case filter p (matchPlayers m) of
+        [_] -> pure $ m{matchPlayers = mpl : filter (not .p) (matchPlayers m)}
+        [] -> Left $ "Match " <> displayShowT (matchId m) <> " did not contain player with id " <> displayShowT (matchPlayerPlayerId mpl)
+        _ -> Left $ "Match " <> displayShowT (matchId m) <> " contained multiple players matching " <> displayShowT (matchPlayerPlayerId mpl)
 
 updateMatch :: Match -> Update DB ()
 updateMatch !a = do
@@ -547,6 +574,7 @@ $(makeAcidic ''DB [
   , 'updateCivilisation
   , 'addNewMatchIds
   , 'deleteMatches
+  , 'updateMatchPlayer
   ])
 
 

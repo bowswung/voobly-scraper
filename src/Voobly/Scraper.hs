@@ -732,7 +732,7 @@ downloadRecordings :: AppM ()
 downloadRecordings = do
   db <- query' GetDB
   let matchesNeedRecording = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) $ IxSet.getEQ (MissingLocalRecording True) (_dbMatches db)
-      playersNeedRecording =  VB.fromList $ filter (playerMissingLocalRecording . snd) $ concat $ map (\x -> map (\y -> (matchId x, y)) $ matchPlayers x) matchesNeedRecording
+      playersNeedRecording =  VB.fromList $  filter (playerMissingLocalRecording . snd) $ concat $ map (\x -> map (\y -> (matchId x, y)) $ matchPlayers x) matchesNeedRecording
 
   logInfo $ (displayShow . VB.length $ playersNeedRecording) <> " player recordings need to be downloaded"
   appState <- get
@@ -743,12 +743,42 @@ downloadRecordings = do
 downloadPlayerRecording :: (MatchId, MatchPlayer) -> AppM ()
 downloadPlayerRecording (mid, MatchPlayer{..}) = do
   case matchPlayerRecording of
-    (Just (Recording url Nothing False)) -> do
+    (Just (re@(Recording url Nothing False))) -> do
       liftIO $ createDirectoryIfMissing True (playerRecordingDir matchPlayerPlayerId)
-      req <- parseRequest $ T.unpack $ url
+      req <- parseRequest $ T.unpack url
       logInfo $ "Requesting recording at " <> displayShow url <> " for match " <> displayShow mid <> " and player " <> displayShow matchPlayerPlayerId
       res <- makeRequest req
-      liftIO $ BL.writeFile (playerRecordingFile matchPlayerPlayerId mid) (responseBody res)
+      let resT = decodeUtf8With ignore (BL.toStrict $ responseBody res)
+      if (isPageNotFound resT || isPagePermissionError resT)
+        then do
+          logWarn $ "Permission error for request " <> displayShow url <> " - recording marked as no longer existing"
+          dbRes <- update' $ UpdateMatchPlayer mid MatchPlayer{
+              matchPlayerPlayerId   = matchPlayerPlayerId,
+              matchPlayerCiv        = matchPlayerCiv,
+              matchPlayerPreRating  = matchPlayerPreRating,
+              matchPlayerPostRating = matchPlayerPostRating,
+              matchPlayerTeam       = matchPlayerTeam,
+              matchPlayerWon        = matchPlayerWon,
+              matchPlayerRecording  = Just re{recordingNoLongerExists = True}
+            }
+          case dbRes of
+            Nothing -> return ()
+            Just err -> throwM $ AppErrorDBError err
+        else do
+          let fp = (playerRecordingFile matchPlayerPlayerId mid)
+          liftIO $ BL.writeFile fp (responseBody res)
+          dbRes <- update' $ UpdateMatchPlayer mid MatchPlayer{
+              matchPlayerPlayerId   = matchPlayerPlayerId,
+              matchPlayerCiv        = matchPlayerCiv,
+              matchPlayerPreRating  = matchPlayerPreRating,
+              matchPlayerPostRating = matchPlayerPostRating,
+              matchPlayerTeam       = matchPlayerTeam,
+              matchPlayerWon        = matchPlayerWon,
+              matchPlayerRecording  = Just re{recordingLocal = Just fp}
+            }
+          case dbRes of
+            Nothing -> return ()
+            Just err -> throwM $ AppErrorDBError err
     x ->   logError $ "Expected match player with recording url but no local file, got " <> displayShow x <> " in downloadPlayerRecording"
 
 downloadPlayerRecording (_, MatchPlayerError{}) =
@@ -799,7 +829,8 @@ scrapeMatch (mid, i) =
 isPageNotFound :: Text -> Bool
 isPageNotFound t = not . null $ doRegex (T.unpack t) "<div class=\"page-title\">Page Not Found</div>"
 
-
+isPagePermissionError :: Text -> Bool
+isPagePermissionError t = not . null $ doRegex (T.unpack t) "<div class=\"page-title\">Permission Denied</div>"
 
 doScrapeMatch :: (MatchId, Int) -> AppM ()
 doScrapeMatch (mid, i) = do
@@ -928,8 +959,6 @@ isErrorComputerOrDeletedPlayer t =
     Nothing -> pure $ not . null $ doRegexJustCaptureGroups (T.unpack . treeToText $ t) "(Computer)"
     Just _ -> pure False
 
-displayShowT ::  Show a => a -> Text
-displayShowT = utf8BuilderToText . displayShow
 
 extractMatchPlayer :: Text -> Bool -> Tree P.Token -> AppM MatchPlayer
 extractMatchPlayer completeText isWinner t = do
