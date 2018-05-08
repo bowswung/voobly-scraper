@@ -151,6 +151,7 @@ instance NFData MatchFetchStatus
 instance NFData AppError
 instance NFData Match
 instance NFData Player
+instance NFData Recording
 
 instance ToJSON Match
 instance ToJSON MatchId
@@ -159,6 +160,7 @@ instance ToJSON MatchPlayer
 instance ToJSON PlayerId
 instance ToJSON CivilisationId
 instance ToJSON Team
+instance ToJSON Recording
 instance FromJSON Match
 instance FromJSON MatchId
 instance FromJSON Ladder
@@ -166,6 +168,7 @@ instance FromJSON MatchPlayer
 instance FromJSON PlayerId
 instance FromJSON CivilisationId
 instance FromJSON Team
+instance FromJSON Recording
 
 
 
@@ -176,6 +179,11 @@ data Civilisation = Civilisation {
   civilisationName :: Text
 } deriving (Eq, Ord, Show)
 
+data Recording = Recording {
+  recordingUrl :: !Text,
+  recordingLocal :: !(Maybe FilePath),
+  recordingNoLongerExists :: Bool
+} deriving (Eq, Ord, Show, Generic)
 
 data MatchPlayer = MatchPlayer {
   matchPlayerPlayerId :: !PlayerId,
@@ -184,24 +192,44 @@ data MatchPlayer = MatchPlayer {
   matchPlayerPostRating :: !Int,
   matchPlayerTeam :: !Team,
   matchPlayerWon :: !Bool,
-  matchPlayerRecording :: !(Maybe Text)
+  matchPlayerRecording :: !(Maybe Recording)
 } | MatchPlayerError !Text deriving (Eq, Ord, Show, Generic)
 
 instance Migrate MatchPlayer where
-  type MigrateFrom MatchPlayer = MatchPlayer_v0
-  migrate MatchPlayer_v0{..} = MatchPlayer{
-     matchPlayerPlayerId   = v0_matchPlayerPlayerId
-   , matchPlayerCiv        = v0_matchPlayerCiv
-   , matchPlayerPreRating  = v0_matchPlayerPreRating
-   , matchPlayerPostRating = v0_matchPlayerPostRating
-   , matchPlayerTeam       = v0_matchPlayerTeam
-   , matchPlayerWon        = v0_matchPlayerWon
-   , matchPlayerRecording  = Nothing
-
-
-
+  type MigrateFrom MatchPlayer = MatchPlayer_v1
+  migrate MatchPlayer_v1{..} = MatchPlayer{
+     matchPlayerPlayerId   = v1_matchPlayerPlayerId
+   , matchPlayerCiv        = v1_matchPlayerCiv
+   , matchPlayerPreRating  = v1_matchPlayerPreRating
+   , matchPlayerPostRating = v1_matchPlayerPostRating
+   , matchPlayerTeam       = v1_matchPlayerTeam
+   , matchPlayerWon        = v1_matchPlayerWon
+   , matchPlayerRecording  = fmap (\x -> Recording x Nothing False) v1_matchPlayerRecording
   }
-  migrate (MatchPlayerError_v0 t) = MatchPlayerError t
+  migrate (MatchPlayerError_v1 t) = MatchPlayerError t
+
+data MatchPlayer_v1 = MatchPlayer_v1 {
+  v1_matchPlayerPlayerId :: !PlayerId,
+  v1_matchPlayerCiv :: !CivilisationId,
+  v1_matchPlayerPreRating :: !Int,
+  v1_matchPlayerPostRating :: !Int,
+  v1_matchPlayerTeam :: !Team,
+  v1_matchPlayerWon :: !Bool,
+  v1_matchPlayerRecording :: !(Maybe Text)
+} | MatchPlayerError_v1 !Text deriving (Eq, Ord, Show, Generic)
+
+instance Migrate MatchPlayer_v1 where
+  type MigrateFrom MatchPlayer_v1 = MatchPlayer_v0
+  migrate MatchPlayer_v0{..} = MatchPlayer_v1{
+     v1_matchPlayerPlayerId   = v0_matchPlayerPlayerId
+   , v1_matchPlayerCiv        = v0_matchPlayerCiv
+   , v1_matchPlayerPreRating  = v0_matchPlayerPreRating
+   , v1_matchPlayerPostRating = v0_matchPlayerPostRating
+   , v1_matchPlayerTeam       = v0_matchPlayerTeam
+   , v1_matchPlayerWon        = v0_matchPlayerWon
+   , v1_matchPlayerRecording  = Nothing
+  }
+  migrate (MatchPlayerError_v0 t) = MatchPlayerError_v1 t
 
 data MatchPlayer_v0 = MatchPlayer_v0 {
   v0_matchPlayerPlayerId :: !PlayerId,
@@ -294,10 +322,23 @@ defaultPlayerLadderProgress l = PlayerLadderProgress l Nothing Nothing
 playerLadderUniqIdx :: PlayerLadder -> (PlayerId, Ladder)
 playerLadderUniqIdx a = (playerLadderPlayerId a, playerLadderLadder a)
 
+newtype MissingLocalRecording = MissingLocalRecording {missingLocalRecordingBool :: Bool}  deriving (Eq, Ord, Show, Generic)
+
+missingLocalRecordingIx :: Match -> MissingLocalRecording
+missingLocalRecordingIx Match{..} = MissingLocalRecording $ or $ map (playerMissingLocalRecording) matchPlayers
+
+playerMissingLocalRecording :: MatchPlayer -> Bool
+playerMissingLocalRecording MatchPlayer{..} =
+  case matchPlayerRecording of
+    Nothing -> False
+    Just Recording{..} -> isNothing recordingLocal && not recordingNoLongerExists
+playerMissingLocalRecording MatchPlayerError{} = False
+
+
 makeSimpleIxSet "PlayerSet" ''Player ['playerId, 'playerLastCompletedUpdate]
 makeSimpleIxSet "PlayerLadderSet" ''PlayerLadder ['playerLadderPlayerId, 'playerLadderLadder, 'playerLadderUniqIdx]
 makeSimpleIxSet "CivilisationSet" ''Civilisation ['civilisationId]
-makeSimpleIxSet "MatchSet" ''Match ['matchId, 'matchLadder]
+makeSimpleIxSet "MatchSet" ''Match ['matchId, 'matchLadder, 'missingLocalRecordingIx]
 makeSimpleIxSet "PlayerLadderProgressSet" ''PlayerLadderProgress ['playerLadderProgressLadder]
 
 
@@ -478,12 +519,14 @@ $(deriveSafeCopy 0 'base ''Team)
 $(deriveSafeCopy 0 'base ''CivilisationId)
 $(deriveSafeCopy 0 'base ''Match)
 $(deriveSafeCopy 0 'base ''Civilisation)
-$(deriveSafeCopy 1 'extension ''MatchPlayer)
+$(deriveSafeCopy 2 'extension ''MatchPlayer)
+$(deriveSafeCopy 1 'extension ''MatchPlayer_v1)
 $(deriveSafeCopy 0 'base ''MatchPlayer_v0)
 $(deriveSafeCopy 0 'base ''MatchId)
 $(deriveSafeCopy 0 'base ''PlayerLadderProgress)
 $(deriveSafeCopy 0 'base ''MatchFetchStatus)
 $(deriveSafeCopy 0 'base ''AppError)
+$(deriveSafeCopy 0 'base ''Recording)
 
 $(makeAcidic ''DB [
   'updateDB,

@@ -43,9 +43,11 @@ import qualified  Data.Conduit as  Cond
 import qualified  Data.Conduit.Combinators as  Cond
 import qualified  Data.Aeson as Aeson
 import Control.Monad.Extra(loopM)
+import System.Directory(createDirectoryIfMissing)
 
 data Command =
     CommandRun
+  | CommandDownloadRecordings
   | CommandQuery
   | CommandDump
   | CommandDumpWithoutErrors
@@ -97,6 +99,7 @@ optionsParser = Options
     )
    <*> subparser (
       ( command "run"          (info (helper <*> pure CommandRun)                 (progDesc "Run the scraper" ))
+     <> command "downloadRecordings"  (info (helper <*> pure CommandDownloadRecordings)          (progDesc "Download recordings"))
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
      <> command "dumpWithoutErrors"  (info (helper <*> pure CommandDumpWithoutErrors)          (progDesc "Dump data"))
@@ -196,7 +199,7 @@ runScraper = do
             scrapePlayers
             scrapeMatches
 
-
+          CommandDownloadRecordings -> downloadRecordings
           CommandQuery -> do
             db <- query' GetDB
             logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
@@ -359,7 +362,7 @@ dumpMatches excludeErrors = do
                 "MatchPlayerWinner" Csv..= matchPlayerWon,
                 "MatchPlayerPreRating" Csv..= matchPlayerPreRating,
                 "MatchPlayerPostRating" Csv..= matchPlayerPostRating,
-                "MatchPlayerRecording" Csv..= matchPlayerRecording
+                "MatchPlayerRecording" Csv..= fmap recordingUrl matchPlayerRecording
               ]
 
           MatchPlayerError t -> do
@@ -380,6 +383,15 @@ dumpMatches excludeErrors = do
 
 runDir :: FilePath
 runDir = "./run"
+
+recordingDir :: FilePath
+recordingDir = runDir <> "/recordings"
+
+playerRecordingDir :: PlayerId -> FilePath
+playerRecordingDir pid = recordingDir <> "/" <> show (playerIdToInt pid)
+
+playerRecordingFile :: PlayerId -> MatchId -> FilePath
+playerRecordingFile pid mid = playerRecordingDir pid <> "/" <> show (matchIdToInt mid)
 
 acidDir :: FilePath
 acidDir = runDir <> "/state"
@@ -716,7 +728,31 @@ extractPlayerMatchIds expectTen t = do
           else throwM $ AppErrorInvalidHtml "Expected between exactly 1 and 10 match ids"
         else mapM runParserFromText $ map T.pack xs
 
+downloadRecordings :: AppM ()
+downloadRecordings = do
+  db <- query' GetDB
+  let matchesNeedRecording = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) $ IxSet.getEQ (MissingLocalRecording True) (_dbMatches db)
+      playersNeedRecording =  VB.fromList $ filter (playerMissingLocalRecording . snd) $ concat $ map (\x -> map (\y -> (matchId x, y)) $ matchPlayers x) matchesNeedRecording
 
+  logInfo $ (displayShow . VB.length $ playersNeedRecording) <> " player recordings need to be downloaded"
+  appState <- get
+  appEnv <- ask
+  liftIO $ withThreads appEnv (stackToIO' appEnv appState downloadPlayerRecording) playersNeedRecording
+
+
+downloadPlayerRecording :: (MatchId, MatchPlayer) -> AppM ()
+downloadPlayerRecording (mid, MatchPlayer{..}) = do
+  case matchPlayerRecording of
+    (Just (Recording url Nothing False)) -> do
+      liftIO $ createDirectoryIfMissing True (playerRecordingDir matchPlayerPlayerId)
+      req <- parseRequest $ T.unpack $ url
+      logInfo $ "Requesting recording at " <> displayShow url <> " for match " <> displayShow mid <> " and player " <> displayShow matchPlayerPlayerId
+      res <- makeRequest req
+      liftIO $ BL.writeFile (playerRecordingFile matchPlayerPlayerId mid) (responseBody res)
+    x ->   logError $ "Expected match player with recording url but no local file, got " <> displayShow x <> " in downloadPlayerRecording"
+
+downloadPlayerRecording (_, MatchPlayerError{}) =
+  logError $ "Match player error encountered in downloadPlayerRecording - filter should have removed these."
 
 
 scrapeMatches :: AppM ()
@@ -913,7 +949,7 @@ extractMatchPlayer completeText isWinner t = do
           , matchPlayerCiv = civId
           , matchPlayerTeam = team
           , matchPlayerWon = isWinner
-          , matchPlayerRecording = recording
+          , matchPlayerRecording = fmap (\x -> Recording x Nothing False) recording
           }
 
   where
