@@ -6,6 +6,7 @@ import Voobly.DB
 import RIO
 import qualified RIO.ByteString.Lazy as BL
 import qualified RIO.Text as T
+import qualified RIO.Text.Partial as T
 import qualified RIO.Text.Lazy as TL
 import qualified RIO.Vector.Boxed as VB
 
@@ -984,11 +985,15 @@ extractMatchPlayer completeText isWinner t = do
   where
     extractPlayerRecording :: Text -> AppM (Maybe Text)
     extractPlayerRecording name = do
-       let reg = "<a href='([^']+)'>[^<]*Download Rec. from <b>[^<]*" ++ T.unpack name ++ "</b></a>"
+       let reg = "<a href='([^']+)'>[^<]*Download Rec. from <b>[^<]*" ++  (T.unpack . escapeForRegex $ name) ++ "</b></a>"
        case doRegexJustCaptureGroups (T.unpack completeText) reg of
         [x] -> return . Just . T.copy $ vooblyUrl <> T.pack x
         [] -> return Nothing
-        xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for extractPlayerRecording, found " <> displayShowT xs <>  " with regex " <> displayShowT reg
+        _ -> return Nothing -- there is an issue with the regex if two players have the same string ending their name
+        --xs -> throwM $ AppErrorInvalidHtml $ "Expected to find one text string for extractPlayerRecording, found " <> displayShowT xs <>  " with regex " <> displayShowT reg
+        where
+          escapeForRegex :: Text -> Text
+          escapeForRegex = T.replace "*" "\\*"
 
     extractPlayerMatchRating :: AppM (Int, Int, Team)
     extractPlayerMatchRating = do
@@ -1099,7 +1104,16 @@ type LadderRow = (Text, PlayerId, Int, Int, Int)
 
 updatePlayerLadders :: Ladder -> LadderRow -> AppM ()
 updatePlayerLadders l (name, pid, rating, wins, loss) = do
-  let p = Player pid (T.copy name) Set.empty Nothing
+  mExistingP <- query' $ GetPlayer pid
+  let p =
+        case mExistingP of
+          Nothing ->  Player{
+            playerId = pid,
+            playerName = T.copy name,
+            playerMatchIds = Set.empty,
+            playerLastCompletedUpdate = Nothing
+          }
+          Just ep -> ep{playerName = T.copy name}
   update' $ UpdatePlayer p
   let pl = PlayerLadder{
              playerLadderPlayerId = pid
