@@ -64,6 +64,7 @@ data Options = Options
   { username   :: Text
   , password   :: Text
   , threadCount :: Int
+  , restrictToPlayerIds :: Maybe [PlayerId]
   , debug :: Bool
   , skipUpdateMatchIds :: Bool
   , runCommand :: Command
@@ -89,6 +90,11 @@ optionsParser = Options
     <> short 't'
     <> help "Number of threads to use"
     <> value 1
+    )
+  <*> option auto (
+       long "restrict-players"
+    <> help "Restrict to certain defined player ids"
+    <> value Nothing
     )
   <*> switch (
        long "debug"
@@ -506,8 +512,8 @@ scrapePlayers :: AppM ()
 scrapePlayers = do
   logInfo $ "*** Scraping player match ids ***"
   doUpdateMatchIds
+  appEnv <- ask
   skip <- do
-    appEnv <- ask
     if (debug . appEnvOptions $  appEnv)
       then do
         matchIds <- query' GetMatchIds
@@ -523,9 +529,12 @@ scrapePlayers = do
       db <- query' GetDB
       now <- getCurrentTime
       let timeago = addUTCTime (-3600 * 24 * 30) now
-      let playersToUpdateBase = VB.fromList $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just timeago) $ _dbPlayers db
+      let playersBase =
+            case restrictToPlayerIds . appEnvOptions $ appEnv of
+              Nothing -> _dbPlayers db
+              Just xs -> (_dbPlayers db) IxSet.@+ xs
+          playersToUpdateBase = VB.fromList $ IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy PlayerId) $ IxSet.getLT (Just timeago) $ playersBase
           totalPlayers = IxSet.size $ _dbPlayers db
-      appEnv <- ask
       playersToUpdate <- if (debug . appEnvOptions $  appEnv)
         then do
           logDebug $ "Restricting player scraping to first 20 players for --debug"
@@ -577,12 +586,6 @@ vChunksOf l v =
       in batch : vChunksOf l next
 
 
-{-withThreadsBatch :: (a -> AppM b) -> Vector a -> AppM ()
-withThreadsBatch act t = do
-  if (debug . appEnvOptions $ appEnv)
-    then mapM_ (liftIO . ioActWrapped) $ VB.toList t
-    else liftIO $ mapConcurrently_ ioActWrapped t
-  where-}
 
 
 

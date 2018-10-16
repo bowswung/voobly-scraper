@@ -111,7 +111,6 @@ executable voobly-scraper-exe
                        -with-rtsopts=-N
                        -O2
 
-  default-language: Haskell2010
   default-language:    Haskell2010
   default-extensions:  AutoDeriveTypeable
                        BangPatterns

@@ -1,0 +1,2 @@
+--command "stack ghci  --ghci-options=-fobject-code"
+--restart "voobly-scraper.cabal"
