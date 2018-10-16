@@ -22,7 +22,7 @@ import qualified RIO.Vector.Boxed as VB
 import qualified RIO.Set as Set
 import Data.Aeson
 
-newtype PlayerId = PlayerId {playerIdToInt :: Int} deriving (Eq, Ord, Show, Read, Generic)
+newtype PlayerId = PlayerId {playerIdToInt :: Int} deriving (Eq, Ord, Show, Generic)
 
 instance Migrate PlayerId where
   type MigrateFrom PlayerId = PlayerId_v0

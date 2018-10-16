@@ -91,7 +91,7 @@ optionsParser = Options
     <> help "Number of threads to use"
     <> value 1
     )
-  <*> option auto (
+  <*> option (fmap (Just . map PlayerId) auto) (
        long "restrict-players"
     <> help "Restrict to certain defined player ids"
     <> value Nothing
@@ -184,7 +184,8 @@ doCreateCheckpoint = do
 
 runScraper :: IO ()
 runScraper = do
-  options <- execParser optionsParserInfo
+  optionsBase <- execParser optionsParserInfo
+  let options = optionsBase{restrictToPlayerIds = fmap L.nub $ restrictToPlayerIds optionsBase}
   logOptions <- logOptionsHandle stderr True
   let logOptions' = setLogUseTime True logOptions
   manager <- liftIO $ newManager tlsManagerSettings
@@ -463,18 +464,24 @@ ladderPageUrl l p = vooblyUrl <> "/ladder/ranking/" <> T.pack (show $ ladderId l
 scrapeLadder :: Ladder -> AppM ()
 scrapeLadder l = do
   logInfo $ "*** Scraping ladder " <> displayShow l <> " ***"
+  appEnv <- ask
   skip <- do
-    appEnv <- ask
+    db <- query' GetDB
     if (debug . appEnvOptions $  appEnv)
       then do
-        db <- query' GetDB
         if (IxSet.size $ _dbPlayers db)  > 100
           then pure True
           else pure False
-      else pure False
+      else
+        case restrictToPlayerIds . appEnvOptions $ appEnv of
+          Nothing -> pure False
+          Just xs -> pure $ IxSet.size ((_dbPlayers db) IxSet.@+ xs) == length xs
+
   if skip
     then do
-      logDebug $ "Skipping scrape ladder for --debug because we have enough players already"
+      if debug . appEnvOptions $ appEnv
+        then logDebug $ "Skipping scrape ladder for --debug because we have enough players already"
+        else logDebug $ "Skipping scrape ladder for --restrict-players because we have found them all already"
     else do
       startProgress <- fmap (fromMaybe $ defaultPlayerLadderProgress l) $ query' (GetPlayerLadderProgress l)
       now <- getCurrentTime
