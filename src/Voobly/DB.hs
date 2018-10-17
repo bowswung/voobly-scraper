@@ -115,6 +115,7 @@ data Ladder =
   | LadderRmTeam
   | LadderDm
   | LadderDmTeam
+  | LadderMatchStatsOnly
   deriving (Eq, Ord, Show, Generic)
 
 ladderId :: Ladder -> Int
@@ -122,6 +123,7 @@ ladderId LadderRm = 131
 ladderId LadderRmTeam = 132
 ladderId LadderDm = 162
 ladderId LadderDmTeam = 163
+ladderId LadderMatchStatsOnly = 171
 
 data PlayerLadder = PlayerLadder {
   playerLadderPlayerId :: !PlayerId,
@@ -520,6 +522,7 @@ instance Csv.ToField Ladder where
   toField LadderRmTeam = Csv.toField $ ("RM - Team" :: Text)
   toField LadderDm = Csv.toField $ ("DM - 1v1" :: Text)
   toField LadderDmTeam = Csv.toField $ ("DM - Team" :: Text)
+  toField LadderMatchStatsOnly = Csv.toField $ ("Match Stats Only" :: Text)
 
 instance Csv.ToField DiffTime where
   toField dt = Csv.toField $ ((round  (fromIntegral (diffTimeToPicoseconds dt) / (10^(12 :: Integer) :: Double))) :: Int)

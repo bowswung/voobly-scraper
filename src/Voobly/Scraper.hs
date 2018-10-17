@@ -65,6 +65,7 @@ data Options = Options
   , password   :: Text
   , threadCount :: Int
   , restrictToPlayerIds :: Maybe [PlayerId]
+  , skipMatchesWithUnknownPlayers :: Bool
   , debug :: Bool
   , skipUpdateMatchIds :: Bool
   , runCommand :: Command
@@ -96,6 +97,10 @@ optionsParser = Options
     <> help "Restrict to certain defined player ids"
     <> value Nothing
     )
+  <*> switch  (
+       long "skip-natches-with-unknown-players"
+    <> help "Skip matches where one or more players have not been scraped. Default is False, which means that unknown players will be inserted into the DB and become known players"
+    )
   <*> switch (
        long "debug"
     <> help "For debugging"
@@ -110,13 +115,13 @@ optionsParser = Options
      <> command "query"  (info (helper <*> pure CommandQuery)          (progDesc "Show data"))
      <> command "dump"  (info (helper <*> pure CommandDump)          (progDesc "Dump data"))
      <> command "dumpWithoutErrors"  (info (helper <*> pure CommandDumpWithoutErrors)          (progDesc "Dump data"))
-     <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))
+{-     <> command "deleteMatches"  (info (helper <*> pure CommandDeleteMatches)          (progDesc "Delete all matches from the db"))-} -- disable this for now
      <> command "runErrors"  (info (helper <*> pure CommandRunErrors)          (progDesc "Sequentially run matches that were previously errors."))
      <> command "dumpMatchJson"  (info (helper <*> pure CommandDumpMatchJson)          (progDesc "Dump current match data to json"))
      <> command "insertMatchJson"  (info (helper <*> pure CommandInsertMatchJson)          (progDesc "Insert match data from json"))
      <> command "info"  (info (helper <*> pure CommandInfo)          (progDesc "Output information about state"))
      <> command "resetMatchStatusForLadders"  (info (helper <*> pure CommandResetMatchStatusForLadders)          (progDesc "Reset fetch status for ladders"))
-     <> command "resetMatchStatusForMissingPlayers"  (info (helper <*> pure CommandResetMatchStatusForMissingPlayers)          (progDesc "Reset fetch status for missing ladders"))
+     <> command "resetMatchStatusForMissingPlayers"  (info (helper <*> pure CommandResetMatchStatusForMissingPlayers)          (progDesc "Reset fetch status for missing players"))
 
       )
     )
@@ -282,7 +287,7 @@ runScraper = do
               else logError "There seems to be a mismatch!"
           CommandResetMatchStatusForLadders -> do
             db <- query' GetDB
-            let matching = HM.filter (\x -> x `elem` [MatchFetchStatusUnsupportedLadder "DM - 1v1", MatchFetchStatusUnsupportedLadder "DM - Team Games"]) (_dbMatchIds db)
+            let matching = HM.filter (\x -> case x of (MatchFetchStatusUnsupportedLadder _) -> True; _ -> False) (_dbMatchIds db)
             logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
             void $ (flip mapM) (HM.keys matching) $ \mid -> do
               update' $ UpdateMatchId mid MatchFetchStatusUntried
@@ -869,12 +874,29 @@ doScrapeMatch (mid, i) = do
             , matchLadder = l
             , matchMap = T.copy mapName
             , matchMods = map T.copy matchMods
-            , matchPlayers = players
+            , matchPlayers = map fst players
             , matchWinner = winningTeam
         }
-      knownPlayers <- (flip mapM) players $ \p ->
+      appEnv <- ask
+      knownPlayers <- (flip mapM) players $ \(p, name) ->
         case p of
-          MatchPlayer{} -> fmap isJust $ query' $ GetPlayer $ matchPlayerPlayerId p
+          MatchPlayer{} -> do
+            existing <- query' $ GetPlayer $ matchPlayerPlayerId p
+            case existing of
+              Just _ -> pure True
+              Nothing ->
+                if skipMatchesWithUnknownPlayers . appEnvOptions $ appEnv
+                  then pure False
+                  else do
+                    let pl = Player{
+                           playerId = matchPlayerPlayerId p
+                         , playerName = T.copy name
+                         , playerMatchIds = Set.empty
+                         , playerLastCompletedUpdate = Nothing
+                         }
+                    logInfo $ "Inserting previously unknown player: " <> displayShow name <> " (" <> (displayShow . matchPlayerPlayerId $ p) <> ")"
+                    update' $ UpdatePlayer pl
+                    pure True
           MatchPlayerError{} -> pure True
       if and knownPlayers
         then do
@@ -896,6 +918,7 @@ extractMatchLadder t =
       "RM - Team Games" -> pure $ Right LadderRmTeam
       "DM - 1v1" -> pure $ Right LadderDm
       "DM - Team Games" -> pure $ Right LadderDmTeam
+      "Match Stats Only" -> pure $ Right LadderMatchStatsOnly
       _ -> pure $ Left (T.pack x)
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one string for ladder"
 
@@ -946,7 +969,7 @@ extractMatchMods t =
   _ -> throwM $ AppErrorInvalidHtml "Expected to find one text string for match mods"
 
 -- we were checking expected players vs player tables found as a sanity check, but too many times Voobly just has the wrong number of players, so we are going to simply trust in their html (which is probably asking for trouble, but still...)
-extractMapPlayers :: Int -> Text -> AppM (Team, [MatchPlayer])
+extractMapPlayers :: Int -> Text -> AppM (Team, [(MatchPlayer, Text)])
 extractMapPlayers _expected t = do
   (winT, loseT) <- findPlayerTables t
   let psFound = length winT + length loseT
@@ -954,7 +977,7 @@ extractMapPlayers _expected t = do
     then do
       !winners <- mapM (extractMatchPlayer t True) winT
       !losers <- mapM (extractMatchPlayer t False) loseT
-      case L.nub $ map matchPlayerTeam (filter (not . isMatchPlayerError) winners) of
+      case L.nub $ map matchPlayerTeam (filter (not . isMatchPlayerError) (map fst winners)) of
         [] -> throwM $ AppErrorVooblyIssue "No winning team"
         [x] -> return (x, winners ++ losers)
         xs -> throwM $ AppErrorInvalidHtml $  "Expected to find exactly one winning team but got" <> (utf8BuilderToText . displayShow $ xs)
@@ -971,18 +994,18 @@ isErrorComputerOrDeletedPlayer t =
     Just _ -> pure False
 
 
-extractMatchPlayer :: Text -> Bool -> Tree P.Token -> AppM MatchPlayer
+extractMatchPlayer :: Text -> Bool -> Tree P.Token -> AppM (MatchPlayer, Text)
 extractMatchPlayer completeText isWinner t = do
   !pNameTree <- playerNameTree
   !isErr <- isErrorComputerOrDeletedPlayer pNameTree
   if isErr
-    then pure $ MatchPlayerError (treeToText pNameTree)
+    then pure $ (MatchPlayerError (treeToText pNameTree), "MatchPlayerErrorText")
     else do
       (name, !playerId) <- extractNameAndIdFromToken pNameTree
       !civId <- extractCivFromTree
       (!oldRating, !newRating, !team) <- extractPlayerMatchRating
       !recording <- extractPlayerRecording name
-      return MatchPlayer {
+      return (MatchPlayer {
             matchPlayerPlayerId = playerId
           , matchPlayerPreRating = oldRating
           , matchPlayerPostRating = newRating
@@ -990,7 +1013,7 @@ extractMatchPlayer completeText isWinner t = do
           , matchPlayerTeam = team
           , matchPlayerWon = isWinner
           , matchPlayerRecording = fmap (\x -> Recording x Nothing False) recording
-          }
+          }, name)
 
   where
     extractPlayerRecording :: Text -> AppM (Maybe Text)
