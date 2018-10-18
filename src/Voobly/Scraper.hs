@@ -448,8 +448,19 @@ matchPlayerRecordingFile m mp p c = do
     playerNameForFile p <> "-" <> opDetail <> "_" <>
     mapDetailForFile m <> "_" <>
     civDetailForFile c <> "_" <>
+    gameVersionDetailForFile m <> "_" <>
     show (matchIdToInt . matchId $ m) <>
     ".mgz"
+
+gameVersionDetailForFile :: Match -> String
+gameVersionDetailForFile m = T.unpack $ T.intercalate "-" $
+  map normaliseMod (matchMods m)
+
+  where
+    normaliseMod :: Text -> Text
+    normaliseMod "WololoKingdoms" = "WK"
+    normaliseMod t = T.filter ((/=) ' ') t
+
 
 matchDateForFile :: Match -> String
 matchDateForFile = formatTime defaultTimeLocale "%_Y%m%d-%H%M%S" . matchDate
