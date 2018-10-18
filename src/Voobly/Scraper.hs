@@ -101,7 +101,7 @@ optionsParser = Options
     )
   <*> option (fmap (Just . map PlayerId) auto) (
        long "restrict-players"
-    <> help "Restrict to certain defined player ids"
+    <> help "Restrict to certain defined player ids" -- eg [123211439,123999216] (viper and tatoh)
     <> value Nothing
     )
   <*> switch  (
@@ -243,7 +243,7 @@ runScraper = do
             matchIds <- query' GetMatchIds
             let matchIdsToUpdate = zip (L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds) [0..]
             logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
-            void $ mapM scrapeMatch matchIdsToUpdate
+            void $ mapM (scrapeMatch $ length matchIdsToUpdate) matchIdsToUpdate
 
           CommandDumpMatchJson -> do
             db <- query' GetDB
@@ -362,7 +362,7 @@ dumpMatches excludeErrors = do
       appEnv <- ask
       let matchPlayersToInclude =
             case (dumpOnlyRestrictedPlayerLines . appEnvOptions $ appEnv, restrictToPlayerIds . appEnvOptions $ appEnv) of
-              (True, Just restrictPlayers) -> filter (\mp -> matchPlayerPlayerId mp `elem` restrictPlayers) matchPlayers
+              (True, Just restrictPlayers) -> filter (\mp -> matchPlayerPlayerId mp `elem` restrictPlayers) (filter (not . isMatchPlayerError) matchPlayers)
               (_,_) -> matchPlayers
 
       if null matchPlayersToInclude
@@ -841,33 +841,34 @@ throwIfNothing msg act = do
     Nothing -> throwM $ AppErrorNotFound (displayShowT msg)
     Just x -> pure x
 
+throwJustTextDbError :: AppM (Maybe Text) -> AppM ()
+throwJustTextDbError act = do
+  a <- act
+  case a of
+    Nothing -> pure ()
+    Just err -> throwM $ AppErrorDBError err
+
 downloadPlayerRecording :: (Match, MatchPlayer) -> AppM ()
 downloadPlayerRecording (m, mp@MatchPlayer{..}) = do
+  case join $ fmap recordingLocal matchPlayerRecording of
+    Nothing -> do
+      mRes <- downloadBestPickPlayerPOV m mp
 
-  mRes <- downloadBestPickPlayerPOV m mp
+      case mRes of
+        Nothing -> logWarn $ "Could not find any povs for match " <> displayShow (matchId m) <> " and player " <> displayShow matchPlayerPlayerId
+        Just (res, url) -> do
+          p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
+          civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
+          actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
+          liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
+          fp <- matchPlayerRecordingFile actualMatch mp p civ
+          liftIO $ BL.writeFile fp (responseBody res)
+          logInfo $ "Recording file successfully written to" <> displayShow fp
+          throwJustTextDbError $ update' $ UpdateMatchPlayer (matchId m) mp{
+            matchPlayerRecording  = Just Recording{recordingUrl = url, recordingLocal = Just fp, recordingNoLongerExists = False}
+           }
+    Just _ -> pure ()
 
-  case mRes of
-    Nothing -> logWarn $ "Could not find any povs for this match and player"
-    Just (res, url) -> do
-      p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
-      civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
-      actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
-      liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
-      fp <- matchPlayerRecordingFile actualMatch mp p civ
-      liftIO $ BL.writeFile fp (responseBody res)
-      logInfo $ "Recording file successfully written to" <> displayShow fp
-      dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
-        matchPlayerPlayerId   = matchPlayerPlayerId,
-        matchPlayerCiv        = matchPlayerCiv,
-        matchPlayerPreRating  = matchPlayerPreRating,
-        matchPlayerPostRating = matchPlayerPostRating,
-        matchPlayerTeam       = matchPlayerTeam,
-        matchPlayerWon        = matchPlayerWon,
-        matchPlayerRecording  = Just Recording{recordingUrl = url, recordingLocal = Just fp, recordingNoLongerExists = False}
-       }
-      case dbRes of
-        Nothing -> return ()
-        Just err -> throwM $ AppErrorDBError err
 
 downloadPlayerRecording (_, MatchPlayerError{}) =
   logError $ "Match player error encountered in downloadPlayerRecording - filter should have removed these."
@@ -887,7 +888,7 @@ mapMWhileNothing (x:xs) = do
 mapMWhileNothing [] = pure Nothing
 
 downloadSinglePOV :: Match -> MatchPlayer -> AppM (Maybe (Response BL.ByteString, Text))
-downloadSinglePOV m MatchPlayer{..} = do
+downloadSinglePOV m mp@MatchPlayer{..} = do
   case matchPlayerRecording of
     (Just (re@(Recording url Nothing False))) -> do
       req <- parseRequest $ T.unpack url
@@ -896,19 +897,11 @@ downloadSinglePOV m MatchPlayer{..} = do
       let resT = decodeUtf8With ignore (BL.toStrict $ responseBody res)
       if (isPageNotFound resT || isPagePermissionError resT)
         then do
-          logWarn $ "Permission error for request " <> displayShow url <> " - recording marked as no longer existing"
-          dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
-              matchPlayerPlayerId   = matchPlayerPlayerId,
-              matchPlayerCiv        = matchPlayerCiv,
-              matchPlayerPreRating  = matchPlayerPreRating,
-              matchPlayerPostRating = matchPlayerPostRating,
-              matchPlayerTeam       = matchPlayerTeam,
-              matchPlayerWon        = matchPlayerWon,
+          logWarn $ "Permission error / page not found for request " <> displayShow url <> " - recording marked as no longer existing"
+          throwJustTextDbError $ update' $ UpdateMatchPlayer (matchId m) mp{
               matchPlayerRecording  = Just re{recordingNoLongerExists = True}
             }
-          case dbRes of
-            Nothing -> return Nothing
-            Just err -> throwM $ AppErrorDBError err
+          pure Nothing
         else pure . pure $ (res, url)
     _ -> pure Nothing
 downloadSinglePOV _ _ = pure Nothing
@@ -925,19 +918,19 @@ scrapeMatches = do
   logInfo $ "*** " <> (displayShow $ HM.size matchIds) <> " matchIds in the DB and " <> (displayShow $ VB.length matchIdsToUpdate) <> " matches need to be scraped ***"
   appEnv <- ask
   appState <- get
-  liftIO $ withThreads appEnv (stackToIO' appEnv appState scrapeMatch) matchIdsToUpdate
+  liftIO $ withThreads appEnv (stackToIO' appEnv appState (scrapeMatch (VB.length matchIdsToUpdate))) matchIdsToUpdate
 
 
 matchPageUrl :: MatchId -> Text
 matchPageUrl mid  = vooblyUrl <> "/match/view/" <> (T.pack . show $ matchIdToInt mid)
 
-scrapeMatch :: (MatchId, Int) -> AppM ()
-scrapeMatch (mid, i) =
+scrapeMatch :: Int -> (MatchId, Int) -> AppM ()
+scrapeMatch total (mid, i) =
   case matchVooblyIssue mid of
     Just a -> do
       update' $ UpdateMatchId mid a
       logWarn $ "Voobly issue handled " <> displayShow a <> " for match " <> displayShow mid
-    Nothing -> MC.catch (doScrapeMatch (mid, i)) handleMatchError
+    Nothing -> MC.catch (doScrapeMatch total (mid, i)) handleMatchError
   where
     handleMatchError :: AppError -> AppM ()
     handleMatchError (AppErrorVooblyIssue t) = do
@@ -961,9 +954,9 @@ isPageNotFound t = not . null $ doRegex (T.unpack t) "<div class=\"page-title\">
 isPagePermissionError :: Text -> Bool
 isPagePermissionError t = not . null $ doRegex (T.unpack t) "<div class=\"page-title\">Permission Denied</div>"
 
-doScrapeMatch :: (MatchId, Int) -> AppM ()
-doScrapeMatch (mid, i) = do
-  logDebug $ "Task " <> (displayShow i) <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
+doScrapeMatch :: Int -> (MatchId, Int) -> AppM ()
+doScrapeMatch total (mid, i) = do
+  logDebug $ "Task " <> (displayShow $ i + 1) <> " of " <> displayShow total <> ": scraping match " <> (displayShow . matchPageUrl $ mid)
 
   t <- makeTextRequest $ matchPageUrl mid
   when (isPageNotFound t) $ throwM AppErrorMatchPageNotFound
