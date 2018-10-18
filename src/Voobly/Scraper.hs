@@ -824,21 +824,13 @@ downloadRecordings = do
   where
     restrictToSingleOrRestrictedPlayers :: [PlayerId] -> Match -> Match
     restrictToSingleOrRestrictedPlayers pids m@Match{..} =
-      -- for each player we are interested in, find a recording
-      let mPlayersNeeded = filter (not . playerHasLocalRecording) restrictedMatchPlayers
-          mPlayersWithRec = map normalisePlayerRecording mPlayersNeeded
-      in m{matchPlayers = catMaybes mPlayersWithRec}
+     let mPlayersNeeded =
+          -- if at least one player can be queried then return restricted players
+          if or $ map (playerMissingLocalRecordingAndCanBeTriedForOne) matchPlayers
+            then filter (not . playerHasLocalRecording) restrictedMatchPlayers
+            else []
+      in m{matchPlayers = mPlayersNeeded}
       where
-        normalisePlayerRecording :: MatchPlayer -> Maybe MatchPlayer
-        normalisePlayerRecording mp@MatchPlayer{} =
-          if playerMissingLocalRecordingAndCanBeTriedForOne mp
-            then Just mp
-            else
-              case take 1 $ filter playerMissingLocalRecordingAndCanBeTriedForOne matchPlayers of
-                [] -> Nothing
-                (x@MatchPlayer{}):_ -> Just $ mp{matchPlayerRecording = matchPlayerRecording x}
-                _ -> Nothing
-        normalisePlayerRecording _ = Nothing
         restrictedMatchPlayers :: [MatchPlayer]
         restrictedMatchPlayers = filter (\mp -> case mp of MatchPlayer{..} -> elem matchPlayerPlayerId pids; _ -> False) matchPlayers
 
@@ -848,12 +840,56 @@ throwIfNothing msg act = do
   case b of
     Nothing -> throwM $ AppErrorNotFound (displayShowT msg)
     Just x -> pure x
+
 downloadPlayerRecording :: (Match, MatchPlayer) -> AppM ()
 downloadPlayerRecording (m, mp@MatchPlayer{..}) = do
+
+  mRes <- downloadBestPickPlayerPOV m mp
+
+  case mRes of
+    Nothing -> logWarn $ "Could not find any povs for this match and player"
+    Just (res, url) -> do
+      p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
+      civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
+      actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
+      liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
+      fp <- matchPlayerRecordingFile actualMatch mp p civ
+      liftIO $ BL.writeFile fp (responseBody res)
+      logInfo $ "Recording file successfully written to" <> displayShow fp
+      dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
+        matchPlayerPlayerId   = matchPlayerPlayerId,
+        matchPlayerCiv        = matchPlayerCiv,
+        matchPlayerPreRating  = matchPlayerPreRating,
+        matchPlayerPostRating = matchPlayerPostRating,
+        matchPlayerTeam       = matchPlayerTeam,
+        matchPlayerWon        = matchPlayerWon,
+        matchPlayerRecording  = Just Recording{recordingUrl = url, recordingLocal = Just fp, recordingNoLongerExists = False}
+       }
+      case dbRes of
+        Nothing -> return ()
+        Just err -> throwM $ AppErrorDBError err
+
+downloadPlayerRecording (_, MatchPlayerError{}) =
+  logError $ "Match player error encountered in downloadPlayerRecording - filter should have removed these."
+
+downloadBestPickPlayerPOV :: Match -> MatchPlayer -> AppM (Maybe (Response BL.ByteString, Text))
+downloadBestPickPlayerPOV m mp = do
+  actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
+  let mps = mp : filter (not . isMatchPlayerError) (matchPlayers actualMatch)
+  mapMWhileNothing $ map (downloadSinglePOV m) mps
+
+mapMWhileNothing :: (Monad m) => [m (Maybe a)] -> m (Maybe a)
+mapMWhileNothing (x:xs) = do
+  res <- x
+  case res of
+    Just a -> pure . Just $ a
+    Nothing -> mapMWhileNothing xs
+mapMWhileNothing [] = pure Nothing
+
+downloadSinglePOV :: Match -> MatchPlayer -> AppM (Maybe (Response BL.ByteString, Text))
+downloadSinglePOV m MatchPlayer{..} = do
   case matchPlayerRecording of
     (Just (re@(Recording url Nothing False))) -> do
-
-
       req <- parseRequest $ T.unpack url
       logInfo $ "Requesting recording at " <> displayShow url <> " for match " <> displayShow (matchId m) <> " and player " <> displayShow matchPlayerPlayerId
       res <- makeRequest req
@@ -871,33 +907,11 @@ downloadPlayerRecording (m, mp@MatchPlayer{..}) = do
               matchPlayerRecording  = Just re{recordingNoLongerExists = True}
             }
           case dbRes of
-            Nothing -> return ()
+            Nothing -> return Nothing
             Just err -> throwM $ AppErrorDBError err
-        else do
-          p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
-          civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
-          actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
-
-          liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
-          fp <- matchPlayerRecordingFile actualMatch mp p civ
-          liftIO $ BL.writeFile fp (responseBody res)
-          logInfo $ "Recording file successfully written to" <> displayShow fp
-          dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
-              matchPlayerPlayerId   = matchPlayerPlayerId,
-              matchPlayerCiv        = matchPlayerCiv,
-              matchPlayerPreRating  = matchPlayerPreRating,
-              matchPlayerPostRating = matchPlayerPostRating,
-              matchPlayerTeam       = matchPlayerTeam,
-              matchPlayerWon        = matchPlayerWon,
-              matchPlayerRecording  = Just re{recordingLocal = Just fp}
-            }
-          case dbRes of
-            Nothing -> return ()
-            Just err -> throwM $ AppErrorDBError err
-    x ->   logError $ "Expected match player with recording url but no local file, got " <> displayShow x <> " in downloadPlayerRecording"
-
-downloadPlayerRecording (_, MatchPlayerError{}) =
-  logError $ "Match player error encountered in downloadPlayerRecording - filter should have removed these."
+        else pure . pure $ (res, url)
+    _ -> pure Nothing
+downloadSinglePOV _ _ = pure Nothing
 
 
 scrapeMatches :: AppM ()
