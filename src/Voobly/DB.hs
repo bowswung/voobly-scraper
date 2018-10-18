@@ -328,14 +328,21 @@ playerLadderUniqIdx a = (playerLadderPlayerId a, playerLadderLadder a)
 newtype MissingLocalRecording = MissingLocalRecording {missingLocalRecordingBool :: Bool}  deriving (Eq, Ord, Show, Generic)
 
 missingLocalRecordingIx :: Match -> MissingLocalRecording
-missingLocalRecordingIx Match{..} = MissingLocalRecording $ or $ map (playerMissingLocalRecording) matchPlayers
+missingLocalRecordingIx Match{..} = MissingLocalRecording $ or $ map (playerMissingLocalRecordingAndCanBeTriedForOne) matchPlayers
 
-playerMissingLocalRecording :: MatchPlayer -> Bool
-playerMissingLocalRecording MatchPlayer{..} =
+playerMissingLocalRecordingAndCanBeTriedForOne :: MatchPlayer -> Bool
+playerMissingLocalRecordingAndCanBeTriedForOne MatchPlayer{..} =
   case matchPlayerRecording of
     Nothing -> False
     Just Recording{..} -> isNothing recordingLocal && not recordingNoLongerExists
-playerMissingLocalRecording MatchPlayerError{} = False
+playerMissingLocalRecordingAndCanBeTriedForOne MatchPlayerError{} = False
+
+playerHasLocalRecording :: MatchPlayer -> Bool
+playerHasLocalRecording MatchPlayer{..} =
+  case matchPlayerRecording of
+    Nothing -> False
+    Just Recording{..} -> isJust recordingLocal
+playerHasLocalRecording MatchPlayerError{} = False
 
 
 makeSimpleIxSet "PlayerSet" ''Player ['playerId, 'playerLastCompletedUpdate]
@@ -474,8 +481,8 @@ updateMatchPlayer mid mpl = do
   where
     replaceMatchPlayer :: Match -> Either Text Match
     replaceMatchPlayer m = do
-      let p = \x -> matchPlayerPlayerId mpl ==  matchPlayerPlayerId x
-      case filter p (matchPlayers m) of
+      let p = \x -> case x of mx@MatchPlayer{} -> matchPlayerPlayerId mpl ==  matchPlayerPlayerId mx; _ -> False
+      case filter p $ matchPlayers m of
         [_] -> pure $ m{matchPlayers = mpl : filter (not .p) (matchPlayers m)}
         [] -> Left $ "Match " <> displayShowT (matchId m) <> " did not contain player with id " <> displayShowT (matchPlayerPlayerId mpl)
         _ -> Left $ "Match " <> displayShowT (matchId m) <> " contained multiple players matching " <> displayShowT (matchPlayerPlayerId mpl)
@@ -572,6 +579,7 @@ $(makeAcidic ''DB [
   , 'getPlayerLadderProgress
   , 'updatePlayerLadderProgress
   , 'getMatchIds
+  , 'getMatch
   , 'updateMatchIds
   , 'updateMatchId
   , 'getCivilisation

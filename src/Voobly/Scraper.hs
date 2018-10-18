@@ -1,3 +1,5 @@
+{-# OPTIONS -fno-warn-incomplete-record-updates #-}
+
 module Voobly.Scraper where
 
 
@@ -12,7 +14,10 @@ import qualified RIO.Vector.Boxed as VB
 
 import qualified System.Process as SP
 
+
+
 import RIO.Time
+import qualified RIO.FilePath as FP
 import qualified RIO.HashMap as HM
 
 import Data.Acid
@@ -59,6 +64,7 @@ data Command =
   | CommandInfo
   | CommandResetMatchStatusForLadders
   | CommandResetMatchStatusForMissingPlayers
+  deriving Show
 
 data Options = Options
   { username   :: Text
@@ -66,10 +72,11 @@ data Options = Options
   , threadCount :: Int
   , restrictToPlayerIds :: Maybe [PlayerId]
   , skipMatchesWithUnknownPlayers :: Bool
+  , dumpOnlyRestrictedPlayerLines :: Bool
   , debug :: Bool
   , skipUpdateMatchIds :: Bool
   , runCommand :: Command
-  }
+  } deriving (Show)
 
 
 optionsParser :: Parser Options
@@ -98,8 +105,12 @@ optionsParser = Options
     <> value Nothing
     )
   <*> switch  (
-       long "skip-natches-with-unknown-players"
+       long "skip-matches-with-unknown-players"
     <> help "Skip matches where one or more players have not been scraped. Default is False, which means that unknown players will be inserted into the DB and become known players"
+    )
+  <*> switch (
+       long "dump-only-restricted-player-lines"
+    <> help "When dumping only include the match lines for the players in --restrict-players"
     )
   <*> switch (
        long "debug"
@@ -306,8 +317,6 @@ resetMatchStatusForMissingPlayers = do
 
 
 
-
-
 dumpMatches :: Bool -> AppM ()
 dumpMatches excludeErrors = do
   db <- query' GetDB
@@ -350,47 +359,56 @@ dumpMatches excludeErrors = do
 
     renderMatch ::HM.HashMap CivilisationId ByteString -> Match -> AppM [Csv.NamedRecord]
     renderMatch civMap Match{..} = do
-      let matchDetails = [
-              "MatchId" Csv..= matchId,
-              "MatchUrl" Csv..= matchPageUrl matchId,
-              "MatchDate" Csv..= matchDate,
-              "MatchDuration" Csv..= matchDuration,
-              "MatchLadder" Csv..= matchLadder,
-              "MatchMap" Csv..= matchMap,
-              "MatchMods" Csv..= matchMods
-            ]
+      appEnv <- ask
+      let matchPlayersToInclude =
+            case (dumpOnlyRestrictedPlayerLines . appEnvOptions $ appEnv, restrictToPlayerIds . appEnvOptions $ appEnv) of
+              (True, Just restrictPlayers) -> filter (\mp -> matchPlayerPlayerId mp `elem` restrictPlayers) matchPlayers
+              (_,_) -> matchPlayers
 
-      (flip mapM) matchPlayers $ \m ->
-        case m of
-          MatchPlayer{..} -> do
-            p <- query' $ GetPlayer matchPlayerPlayerId
-            let pName = fromMaybe "*NameNotFoundInScraperDB*" (fmap playerName p)
-                civName = fromMaybe "*CivNameNotFoundInScraperDB*" $ HM.lookup matchPlayerCiv civMap
-            return $ Csv.namedRecord $ matchDetails ++ [
-                "MatchPlayerId" Csv..= matchPlayerPlayerId,
-                "MatchPlayerName" Csv..= pName,
-                "MatchPlayerTeam" Csv..= matchPlayerTeam,
-                "MatchPlayerCivId" Csv..= matchPlayerCiv,
-                "MatchPlayerCivName" Csv..= civName,
-                "MatchPlayerWinner" Csv..= matchPlayerWon,
-                "MatchPlayerPreRating" Csv..= matchPlayerPreRating,
-                "MatchPlayerPostRating" Csv..= matchPlayerPostRating,
-                "MatchPlayerRecording" Csv..= fmap recordingUrl matchPlayerRecording
-              ]
+      if null matchPlayersToInclude
+        then pure []
+        else do
+          let matchDetails = [
+                  "MatchId" Csv..= matchId,
+                  "MatchUrl" Csv..= matchPageUrl matchId,
+                  "MatchDate" Csv..= matchDate,
+                  "MatchDuration" Csv..= matchDuration,
+                  "MatchLadder" Csv..= matchLadder,
+                  "MatchMap" Csv..= matchMap,
+                  "MatchMods" Csv..= matchMods
+                ]
 
-          MatchPlayerError t -> do
-            let (errorName :: Text) = "*VooblyErrorPlayerNotFound*"
-            return $ Csv.namedRecord $ matchDetails ++ [
-                "MatchPlayerId" Csv..= errorName,
-                "MatchPlayerName" Csv..= t,
-                "MatchPlayerTeam" Csv..= errorName,
-                "MatchPlayerCivId" Csv..= errorName,
-                "MatchPlayerCivName" Csv..= errorName,
-                "MatchPlayerWinner" Csv..= errorName,
-                "MatchPlayerPreRating" Csv..= errorName,
-                "MatchPlayerPostRating" Csv..= errorName,
-                "MatchPlayerRecording" Csv..= errorName
-              ]
+          (flip mapM) matchPlayersToInclude $ \m ->
+            case m of
+              MatchPlayer{..} -> do
+                p <- query' $ GetPlayer matchPlayerPlayerId
+                let pName = fromMaybe "*NameNotFoundInScraperDB*" (fmap playerName p)
+                    civName = fromMaybe "*CivNameNotFoundInScraperDB*" $ HM.lookup matchPlayerCiv civMap
+                return $ Csv.namedRecord $ matchDetails ++ [
+                    "MatchPlayerId" Csv..= matchPlayerPlayerId,
+                    "MatchPlayerName" Csv..= pName,
+                    "MatchPlayerTeam" Csv..= matchPlayerTeam,
+                    "MatchPlayerCivId" Csv..= matchPlayerCiv,
+                    "MatchPlayerCivName" Csv..= civName,
+                    "MatchPlayerWinner" Csv..= matchPlayerWon,
+                    "MatchPlayerPreRating" Csv..= matchPlayerPreRating,
+                    "MatchPlayerPostRating" Csv..= matchPlayerPostRating,
+                    "MatchPlayerRecording" Csv..= fmap recordingUrl matchPlayerRecording
+                  ]
+
+              MatchPlayerError t -> do
+                let (errorName :: Text) = "*VooblyErrorPlayerNotFound*"
+                return $ Csv.namedRecord $ matchDetails ++ [
+                    "MatchPlayerId" Csv..= errorName,
+                    "MatchPlayerName" Csv..= t,
+                    "MatchPlayerTeam" Csv..= errorName,
+                    "MatchPlayerCivId" Csv..= errorName,
+                    "MatchPlayerCivName" Csv..= errorName,
+                    "MatchPlayerWinner" Csv..= errorName,
+                    "MatchPlayerPreRating" Csv..= errorName,
+                    "MatchPlayerPostRating" Csv..= errorName,
+                    "MatchPlayerRecording" Csv..= errorName
+                  ]
 
 
 
@@ -400,11 +418,54 @@ runDir = "./run"
 recordingDir :: FilePath
 recordingDir = runDir <> "/recordings"
 
-playerRecordingDir :: PlayerId -> FilePath
-playerRecordingDir pid = recordingDir <> "/" <> show (playerIdToInt pid)
+matchPlayerRecordingDir :: Match -> MatchPlayer -> Player -> FilePath
+matchPlayerRecordingDir m _mp p = recordingDir <> "/" <> playerNameForFile p <> "/" <> matchTypeForFile m
 
-playerRecordingFile :: PlayerId -> MatchId -> FilePath
-playerRecordingFile pid mid = playerRecordingDir pid <> "/" <> show (matchIdToInt mid)
+playerNameForFile :: Player -> String
+playerNameForFile = FP.makeValid . T.unpack . playerName
+
+matchTypeForFile :: Match -> String
+matchTypeForFile m =
+  if length (matchPlayers m) <= 2
+    then "1v1"
+    else "Team"
+
+matchPlayerRecordingFile :: Match -> MatchPlayer -> Player -> Civilisation -> AppM FilePath
+matchPlayerRecordingFile m mp p c = do
+  opDetail <- opponentDetailForFile m mp
+  pure $ matchPlayerRecordingDir m mp p <> "/" <> "rec." <>
+    matchDateForFile m <> "_" <>
+    playerNameForFile p <> "-" <> opDetail <> "_" <>
+    mapDetailForFile m <> "_" <>
+    civDetailForFile c <> "_" <>
+    show (matchIdToInt . matchId $ m) <>
+    ".mgz"
+
+matchDateForFile :: Match -> String
+matchDateForFile = formatTime defaultTimeLocale "%_Y%m%d-%H%M%S" . matchDate
+
+opponentDetailForFile :: Match -> MatchPlayer -> AppM String
+opponentDetailForFile Match{..} mp = do
+  let nePlayers = filter (not . isMatchPlayerError) matchPlayers
+  case filter ((/=) (matchPlayerPlayerId mp) . matchPlayerPlayerId) nePlayers of
+    [x] -> do
+      p <- throwIfNothing (matchPlayerPlayerId x) $ query' $ GetPlayer (matchPlayerPlayerId x)
+      pure $ "vs-" <> playerNameForFile p
+    _ -> do
+      let teams = L.nub $ map matchPlayerTeam nePlayers
+      if length teams == length nePlayers
+        then pure $ "ffa"
+        else do
+          let teamsToRender = matchPlayerTeam mp : filter ((/=) (matchPlayerTeam mp)) teams
+              teamsRendered = map (\t-> show $ length (filter ((==) t . matchPlayerTeam) nePlayers)) teamsToRender
+          pure $ L.intercalate "vs" teamsRendered
+
+
+mapDetailForFile :: Match -> String
+mapDetailForFile = FP.makeValid . T.unpack . matchMap
+
+civDetailForFile :: Civilisation -> FilePath
+civDetailForFile = take 4 . T.unpack . civilisationName
 
 acidDir :: FilePath
 acidDir = runDir <> "/state"
@@ -747,28 +808,60 @@ extractPlayerMatchIds expectTen t = do
 downloadRecordings :: AppM ()
 downloadRecordings = do
   db <- query' GetDB
-  let matchesNeedRecording = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) $ IxSet.getEQ (MissingLocalRecording True) (_dbMatches db)
-      playersNeedRecording =  VB.fromList $  filter (playerMissingLocalRecording . snd) $ concat $ map (\x -> map (\y -> (matchId x, y)) $ matchPlayers x) matchesNeedRecording
-
-  logInfo $ (displayShow . VB.length $ playersNeedRecording) <> " player recordings need to be downloaded"
-  appState <- get
   appEnv <- ask
-  liftIO $ withThreads appEnv (stackToIO' appEnv appState downloadPlayerRecording) playersNeedRecording
 
+  let matchesNeedRecording = IxSet.toAscList (Proxy.Proxy :: Proxy.Proxy MatchId) $ IxSet.getEQ (MissingLocalRecording True) (_dbMatches db)
+      matchesNeedRecordingWithPlayersRestricted =
+        case restrictToPlayerIds . appEnvOptions $ appEnv of
+          Nothing -> matchesNeedRecording
+          Just pids -> map (restrictToSingleOrRestrictedPlayers pids) matchesNeedRecording
+      playersNeedRecording =   filter (playerMissingLocalRecordingAndCanBeTriedForOne . snd) $ concat $ map (\x -> map (\y -> (x, y)) $ matchPlayers x) matchesNeedRecordingWithPlayersRestricted
+      playersNeedRecordingSorted =  L.sortBy (compare `on` (matchId . fst)) playersNeedRecording
 
-downloadPlayerRecording :: (MatchId, MatchPlayer) -> AppM ()
-downloadPlayerRecording (mid, MatchPlayer{..}) = do
+  logInfo $ (displayShow . length $ playersNeedRecordingSorted) <> " player recordings need to be downloaded"
+  appState <- get
+  liftIO $ withThreads appEnv (stackToIO' appEnv appState downloadPlayerRecording)  $ VB.fromList playersNeedRecordingSorted
+  where
+    restrictToSingleOrRestrictedPlayers :: [PlayerId] -> Match -> Match
+    restrictToSingleOrRestrictedPlayers pids m@Match{..} =
+      -- for each player we are interested in, find a recording
+      let mPlayersNeeded = filter (not . playerHasLocalRecording) restrictedMatchPlayers
+          mPlayersWithRec = map normalisePlayerRecording mPlayersNeeded
+      in m{matchPlayers = catMaybes mPlayersWithRec}
+      where
+        normalisePlayerRecording :: MatchPlayer -> Maybe MatchPlayer
+        normalisePlayerRecording mp@MatchPlayer{} =
+          if playerMissingLocalRecordingAndCanBeTriedForOne mp
+            then Just mp
+            else
+              case take 1 $ filter playerMissingLocalRecordingAndCanBeTriedForOne matchPlayers of
+                [] -> Nothing
+                (x@MatchPlayer{}):_ -> Just $ mp{matchPlayerRecording = matchPlayerRecording x}
+                _ -> Nothing
+        normalisePlayerRecording _ = Nothing
+        restrictedMatchPlayers :: [MatchPlayer]
+        restrictedMatchPlayers = filter (\mp -> case mp of MatchPlayer{..} -> elem matchPlayerPlayerId pids; _ -> False) matchPlayers
+
+throwIfNothing :: Show a => a -> AppM (Maybe b) -> AppM b
+throwIfNothing msg act = do
+  b <- act
+  case b of
+    Nothing -> throwM $ AppErrorNotFound (displayShowT msg)
+    Just x -> pure x
+downloadPlayerRecording :: (Match, MatchPlayer) -> AppM ()
+downloadPlayerRecording (m, mp@MatchPlayer{..}) = do
   case matchPlayerRecording of
     (Just (re@(Recording url Nothing False))) -> do
-      liftIO $ createDirectoryIfMissing True (playerRecordingDir matchPlayerPlayerId)
+
+
       req <- parseRequest $ T.unpack url
-      logInfo $ "Requesting recording at " <> displayShow url <> " for match " <> displayShow mid <> " and player " <> displayShow matchPlayerPlayerId
+      logInfo $ "Requesting recording at " <> displayShow url <> " for match " <> displayShow (matchId m) <> " and player " <> displayShow matchPlayerPlayerId
       res <- makeRequest req
       let resT = decodeUtf8With ignore (BL.toStrict $ responseBody res)
       if (isPageNotFound resT || isPagePermissionError resT)
         then do
           logWarn $ "Permission error for request " <> displayShow url <> " - recording marked as no longer existing"
-          dbRes <- update' $ UpdateMatchPlayer mid MatchPlayer{
+          dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
               matchPlayerPlayerId   = matchPlayerPlayerId,
               matchPlayerCiv        = matchPlayerCiv,
               matchPlayerPreRating  = matchPlayerPreRating,
@@ -781,9 +874,15 @@ downloadPlayerRecording (mid, MatchPlayer{..}) = do
             Nothing -> return ()
             Just err -> throwM $ AppErrorDBError err
         else do
-          let fp = (playerRecordingFile matchPlayerPlayerId mid)
+          p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
+          civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
+          actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
+
+          liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
+          fp <- matchPlayerRecordingFile actualMatch mp p civ
           liftIO $ BL.writeFile fp (responseBody res)
-          dbRes <- update' $ UpdateMatchPlayer mid MatchPlayer{
+          logInfo $ "Recording file successfully written to" <> displayShow fp
+          dbRes <- update' $ UpdateMatchPlayer (matchId m) MatchPlayer{
               matchPlayerPlayerId   = matchPlayerPlayerId,
               matchPlayerCiv        = matchPlayerCiv,
               matchPlayerPreRating  = matchPlayerPreRating,
