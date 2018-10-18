@@ -45,7 +45,8 @@ library
     conduit,
     aeson,
     extra,
-    directory
+    directory,
+    zip
 
   hs-source-dirs:      src
   ghc-options:         -Wall

@@ -263,6 +263,7 @@ data AppError =
   | AppErrorDBError Text
   | AppErrorVooblyIssue Text
   | AppErrorMatchPageNotFound
+  | AppErrorInvalidZip Text
   deriving (Show, Eq, Ord, Typeable, Generic)
 instance Exception AppError
 

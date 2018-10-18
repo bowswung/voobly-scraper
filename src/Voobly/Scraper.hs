@@ -17,6 +17,7 @@ import qualified System.Process as SP
 
 
 import RIO.Time
+import qualified RIO.Map as Map
 import qualified RIO.FilePath as FP
 import qualified RIO.HashMap as HM
 
@@ -50,6 +51,9 @@ import qualified  Data.Conduit.Combinators as  Cond
 import qualified  Data.Aeson as Aeson
 import Control.Monad.Extra(loopM)
 import System.Directory(createDirectoryIfMissing)
+import qualified RIO.Directory as Dir
+
+import qualified Codec.Archive.Zip as Zip
 
 data Command =
     CommandRun
@@ -418,6 +422,9 @@ runDir = "./run"
 recordingDir :: FilePath
 recordingDir = runDir <> "/recordings"
 
+tempDir :: FilePath
+tempDir = runDir <> "/temp"
+
 matchPlayerRecordingDir :: Match -> MatchPlayer -> Player -> FilePath
 matchPlayerRecordingDir m _mp p = recordingDir <> "/" <> playerNameForFile p <> "/" <> matchTypeForFile m
 
@@ -429,6 +436,9 @@ matchTypeForFile m =
   if length (matchPlayers m) <= 2
     then "1v1"
     else "Team"
+
+matchPlayerTempFile :: Match -> Player -> FilePath
+matchPlayerTempFile m p = tempDir <> "/" <> show (matchIdToInt . matchId $ m) <> "__" <> show (playerIdToInt . playerId $ p) <> ".zip"
 
 matchPlayerRecordingFile :: Match -> MatchPlayer -> Player -> Civilisation -> AppM FilePath
 matchPlayerRecordingFile m mp p c = do
@@ -860,13 +870,36 @@ downloadPlayerRecording (m, mp@MatchPlayer{..}) = do
           p <- throwIfNothing matchPlayerPlayerId $ query' $ GetPlayer matchPlayerPlayerId
           civ <- throwIfNothing matchPlayerCiv $  query' $ GetCivilisation  matchPlayerCiv
           actualMatch <- throwIfNothing (matchId m) $  query' $ GetMatch  (matchId m)
+
+          liftIO $ createDirectoryIfMissing True tempDir
           liftIO $ createDirectoryIfMissing True (matchPlayerRecordingDir actualMatch mp p)
+
           fp <- matchPlayerRecordingFile actualMatch mp p civ
-          liftIO $ BL.writeFile fp (responseBody res)
-          logInfo $ "Recording file successfully written to" <> displayShow fp
-          throwJustTextDbError $ update' $ UpdateMatchPlayer (matchId m) mp{
-            matchPlayerRecording  = Just Recording{recordingUrl = url, recordingLocal = Just fp, recordingNoLongerExists = False}
-           }
+          let fpZipped = matchPlayerTempFile actualMatch p
+          liftIO $ BL.writeFile fpZipped (responseBody res)
+
+          mErr <-
+            Zip.withArchive fpZipped $ do
+              es <- fmap Map.keys Zip.getEntries
+              case es of
+                [x] -> do
+                  intact <- Zip.checkEntry x
+                  if intact
+                    then do
+                      Zip.saveEntry x fp
+                      pure Nothing
+                    else pure . pure $ "The entry in the zip did not pass crc check - the downloaded data may be invalid"
+                [] -> pure . pure $ "No entries found in downloaded zip file"
+                _ -> pure . pure $ "Multiple entries found in downloaded zip file"
+
+          liftIO $ Dir.removeFile fpZipped
+          case mErr of
+            Nothing -> do
+              logInfo $ "Recording file successfully written to" <> displayShow fp
+              throwJustTextDbError $ update' $ UpdateMatchPlayer (matchId m) mp{
+                matchPlayerRecording  = Just Recording{recordingUrl = url, recordingLocal = Just fp, recordingNoLongerExists = False}
+               }
+            Just err -> throwM $ AppErrorInvalidZip err
     Just _ -> pure ()
 
 
