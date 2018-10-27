@@ -505,7 +505,7 @@ updateMatch !a = do
 deleteMatches :: Update DB ()
 deleteMatches = modify (\db ->
 
-  L.set dbMatches ((L.view dbMatches db) IxSet.@+ [LadderRm, LadderRmTeam]) db)
+  L.set dbMatches IxSet.empty db)
 
 
 
