@@ -4,6 +4,8 @@ module Voobly.Scraper where
 
 
 import Voobly.DB
+import qualified Voobly.Analyzer as Analyzer
+
 
 import RIO
 import qualified RIO.ByteString.Lazy as BL
@@ -68,6 +70,7 @@ data Command =
   | CommandInfo
   | CommandResetMatchStatusForLadders
   | CommandResetMatchStatusForMissingPlayers
+  | CommandParse
   deriving Show
 
 data Options = Options
@@ -137,6 +140,7 @@ optionsParser = Options
      <> command "info"  (info (helper <*> pure CommandInfo)          (progDesc "Output information about state"))
      <> command "resetMatchStatusForLadders"  (info (helper <*> pure CommandResetMatchStatusForLadders)          (progDesc "Reset fetch status for ladders"))
      <> command "resetMatchStatusForMissingPlayers"  (info (helper <*> pure CommandResetMatchStatusForMissingPlayers)          (progDesc "Reset fetch status for missing players"))
+     <> command "parse" (info (helper <*> pure CommandParse)          (progDesc "Parse"))
 
       )
     )
@@ -210,104 +214,108 @@ runScraper = do
   let logOptions' = setLogUseTime True logOptions
   manager <- liftIO $ newManager tlsManagerSettings
   withLogFunc logOptions' $ \lf -> do
-    withAcid $ \acid -> do
-      let appEnv = AppEnv lf options acid
-          appState = AppState manager
-      runStack appEnv appState $ do
-        case runCommand options of
-          CommandRun -> do
-            _ <- liftIO $ execSchedule $ do return ()
-              --addJob (stackToIO appEnv appState doCreateCheckpoint) "*/30 * * * *"
+    case runCommand options of
+      CommandParse -> runRIO lf Analyzer.parseRec
+      c -> do
+        withAcid $ \acid -> do
+          let appEnv = AppEnv lf options acid
+              appState = AppState manager
+          runStack appEnv appState $ do
+            case c of
+              CommandParse -> logError "Doesn't use state for now"
+              CommandRun -> do
+                _ <- liftIO $ execSchedule $ do return ()
+                  --addJob (stackToIO appEnv appState doCreateCheckpoint) "*/30 * * * *"
 
-            initialise
-            scrapeLadder LadderRm
-            scrapeLadder LadderRmTeam
-            scrapeLadder LadderDm
-            scrapeLadder LadderDmTeam
-            scrapePlayers
-            scrapeMatches
+                initialise
+                scrapeLadder LadderRm
+                scrapeLadder LadderRmTeam
+                scrapeLadder LadderDm
+                scrapeLadder LadderDmTeam
+                scrapePlayers
+                scrapeMatches
 
-          CommandDownloadRecordings -> downloadRecordings
-          CommandQuery -> do
-            db <- query' GetDB
-            logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
-            logDebug $ displayShow $ take 20 (IxSet.toList $ _dbPlayers db)
+              CommandDownloadRecordings -> downloadRecordings
+              CommandQuery -> do
+                db <- query' GetDB
+                logDebug $ "Players: " <> (displayShow $ (IxSet.size $ _dbPlayers db))
+                logDebug $ displayShow $ take 20 (IxSet.toList $ _dbPlayers db)
 
-          CommandDump -> do
-            dumpMatches False
+              CommandDump -> do
+                dumpMatches False
 
-          CommandDumpWithoutErrors -> do
-            dumpMatches True
+              CommandDumpWithoutErrors -> do
+                dumpMatches True
 
-          CommandDeleteMatches -> do
-            update' DeleteMatches
-            logDebug $ "Match database cleared"
+              CommandDeleteMatches -> do
+                update' DeleteMatches
+                logDebug $ "Match database cleared"
 
-          CommandRunErrors -> do
-            matchIds <- query' GetMatchIds
-            let matchIdsToUpdate = zip (L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds) [0..]
-            logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
-            void $ mapM (scrapeMatch $ length matchIdsToUpdate) matchIdsToUpdate
+              CommandRunErrors -> do
+                matchIds <- query' GetMatchIds
+                let matchIdsToUpdate = zip (L.sort . HM.keys $ HM.filter isMatchFetchStatusExceptionError matchIds) [0..]
+                logInfo $ "*** " <> (displayShow $ length matchIdsToUpdate) <> " error matches to be scraped ***"
+                void $ mapM (scrapeMatch $ length matchIdsToUpdate) matchIdsToUpdate
 
-          CommandDumpMatchJson -> do
-            db <- query' GetDB
-            let matches = IxSet.toList . _dbMatches $ db
-            logInfo $ "Dumping " <> (displayShow . length $ matches) <> " matches "
-            BL.writeFile (runDir <> "/matches.json") (Aeson.encode matches)
+              CommandDumpMatchJson -> do
+                db <- query' GetDB
+                let matches = IxSet.toList . _dbMatches $ db
+                logInfo $ "Dumping " <> (displayShow . length $ matches) <> " matches "
+                BL.writeFile (runDir <> "/matches.json") (Aeson.encode matches)
 
-          CommandInsertMatchJson -> do
-            bs <- BL.readFile (runDir <> "/matches.json")
-            case Aeson.eitherDecode' bs of
-              Left err -> logError $ "Decoding json failed with: " <> (displayShow $ err)
-              Right (as :: [Match]) -> do
-                logInfo $ "Inserting " <> (displayShow . length $ as) <> " matches "
-                void $ mapM (update' . UpdateMatch) as
-          CommandInfo -> do
-            db <- query' GetDB
-            logInfo $ "State information: "
-            logInfo $ (displayShow . IxSet.size $ _dbPlayers db) <> " players"
-            logInfo $ (displayShow . IxSet.size $ _dbPlayerLadders db) <> " player ladders"
-            logInfo $ (displayShow . HM.size $ _dbMatchIds db) <> " match ids"
-            logInfo $ "\nOF WHICH: \n"
-            let completedHashMap = HM.filter isMatchFetchStatusComplete $ _dbMatchIds db
+              CommandInsertMatchJson -> do
+                bs <- BL.readFile (runDir <> "/matches.json")
+                case Aeson.eitherDecode' bs of
+                  Left err -> logError $ "Decoding json failed with: " <> (displayShow $ err)
+                  Right (as :: [Match]) -> do
+                    logInfo $ "Inserting " <> (displayShow . length $ as) <> " matches "
+                    void $ mapM (update' . UpdateMatch) as
+              CommandInfo -> do
+                db <- query' GetDB
+                logInfo $ "State information: "
+                logInfo $ (displayShow . IxSet.size $ _dbPlayers db) <> " players"
+                logInfo $ (displayShow . IxSet.size $ _dbPlayerLadders db) <> " player ladders"
+                logInfo $ (displayShow . HM.size $ _dbMatchIds db) <> " match ids"
+                logInfo $ "\nOF WHICH: \n"
+                let completedHashMap = HM.filter isMatchFetchStatusComplete $ _dbMatchIds db
 
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUntried $ _dbMatchIds db) <> " untried"
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUnsupportedLadder $ _dbMatchIds db) <> " unsupported ladder"
-
-
-
-            logInfo $ (displayShow . catMaybes . map maybeUnsupportedLadder . L.nub . HM.elems . HM.filter isMatchFetchStatusUnsupportedLadder  $ _dbMatchIds db) <> " unsupported ladders"
-
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMissingPlayer $ _dbMatchIds db) <> " missing player"
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusVooblyIssue $ _dbMatchIds db) <> " voobly issue"
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMatchPageNotFound $ _dbMatchIds db) <> " matches not found (too old probably)"
-            logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusExceptionError $ _dbMatchIds db) <> " exception error (can be retried)"
-            logInfo $ (displayShow . HM.size $ completedHashMap) <> " complete"
-
-            logInfo $ "\nThere are " <> (displayShow . IxSet.size $ _dbMatches db) <> " matches in the db \n"
-            logInfo $ "\nOF COMPLETED MATCH IDS: \n"
-            let (present, absent) = L.partition (\x -> isJust $ IxSet.getOne $ IxSet.getEQ x (_dbMatches db)) (HM.keys completedHashMap)
-
-            logInfo $ (displayShow . length $ present) <> " matches are present"
-            logInfo $ (displayShow . length $ absent) <> " matches are absent"
-
-            void $ (flip mapM) [LadderRm, LadderRmTeam, LadderDm, LadderDmTeam] $ \x -> do
-              let l = IxSet.size $ IxSet.getEQ x  (_dbMatches db)
-              logInfo $ displayShow x <> ": " <> (displayShow l) <> " matches"
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUntried $ _dbMatchIds db) <> " untried"
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusUnsupportedLadder $ _dbMatchIds db) <> " unsupported ladder"
 
 
 
-            if (length present == HM.size completedHashMap)
-              then logInfo "Everything is looking ok"
-              else logError "There seems to be a mismatch!"
-          CommandResetMatchStatusForLadders -> do
-            db <- query' GetDB
-            let matching = HM.filter (\x -> case x of (MatchFetchStatusUnsupportedLadder _) -> True; _ -> False) (_dbMatchIds db)
-            logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
-            void $ (flip mapM) (HM.keys matching) $ \mid -> do
-              update' $ UpdateMatchId mid MatchFetchStatusUntried
+                logInfo $ (displayShow . catMaybes . map maybeUnsupportedLadder . L.nub . HM.elems . HM.filter isMatchFetchStatusUnsupportedLadder  $ _dbMatchIds db) <> " unsupported ladders"
 
-          CommandResetMatchStatusForMissingPlayers -> resetMatchStatusForMissingPlayers
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMissingPlayer $ _dbMatchIds db) <> " missing player"
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusVooblyIssue $ _dbMatchIds db) <> " voobly issue"
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusMatchPageNotFound $ _dbMatchIds db) <> " matches not found (too old probably)"
+                logInfo $ (displayShow . HM.size . HM.filter isMatchFetchStatusExceptionError $ _dbMatchIds db) <> " exception error (can be retried)"
+                logInfo $ (displayShow . HM.size $ completedHashMap) <> " complete"
+
+                logInfo $ "\nThere are " <> (displayShow . IxSet.size $ _dbMatches db) <> " matches in the db \n"
+                logInfo $ "\nOF COMPLETED MATCH IDS: \n"
+                let (present, absent) = L.partition (\x -> isJust $ IxSet.getOne $ IxSet.getEQ x (_dbMatches db)) (HM.keys completedHashMap)
+
+                logInfo $ (displayShow . length $ present) <> " matches are present"
+                logInfo $ (displayShow . length $ absent) <> " matches are absent"
+
+                void $ (flip mapM) [LadderRm, LadderRmTeam, LadderDm, LadderDmTeam] $ \x -> do
+                  let l = IxSet.size $ IxSet.getEQ x  (_dbMatches db)
+                  logInfo $ displayShow x <> ": " <> (displayShow l) <> " matches"
+
+
+
+                if (length present == HM.size completedHashMap)
+                  then logInfo "Everything is looking ok"
+                  else logError "There seems to be a mismatch!"
+              CommandResetMatchStatusForLadders -> do
+                db <- query' GetDB
+                let matching = HM.filter (\x -> case x of (MatchFetchStatusUnsupportedLadder _) -> True; _ -> False) (_dbMatchIds db)
+                logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
+                void $ (flip mapM) (HM.keys matching) $ \mid -> do
+                  update' $ UpdateMatchId mid MatchFetchStatusUntried
+
+              CommandResetMatchStatusForMissingPlayers -> resetMatchStatusForMissingPlayers
 
 
 

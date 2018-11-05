@@ -7,3 +7,4 @@ extra-deps:
 - rio-0.1.1.0
 - acid-state-0.14.3
 - html-parse-0.2.0.1
+- pure-zlib-0.6.4

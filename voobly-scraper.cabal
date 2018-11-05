@@ -14,6 +14,7 @@ cabal-version:       >= 1.24
 library
   exposed-modules:
     Voobly.Scraper
+    Voobly.Analyzer
     Voobly.DB
     Voobly.TH
 
@@ -46,7 +47,12 @@ library
     aeson,
     extra,
     directory,
-    zip
+    zip,
+    binary,
+    attoparsec,
+    zlib,
+    bytestring,
+    text
 
   hs-source-dirs:      src
   ghc-options:         -Wall
