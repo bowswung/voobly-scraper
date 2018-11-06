@@ -221,7 +221,7 @@ runScraper = do
         case rinfo of
           Left err -> logError $ displayShow err
           Right r -> do
-            let s = Simulate.simulate r
+            s <- Simulate.simulate r
             Simulate.replay s
       c -> do
         withAcid $ \acid -> do

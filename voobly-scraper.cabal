@@ -18,6 +18,9 @@ library
     Voobly.TH
     Data.Mgz.Deserialise
     Data.Mgz.Simulate
+    Data.Mgz.Constants
+    Data.Mgz.Constants.Techs
+    Data.Mgz.Constants.Objects
 
 
 

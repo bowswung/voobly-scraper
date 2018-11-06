@@ -26,7 +26,10 @@ parseRec = do
   bs <- BS.readFile "/code/recanalyst/test/recs/versions/up1.4.mgz"
   pure $ AP.parseOnly gameParser bs
 
-data RecInfo = RecInfo Header [Op]
+data RecInfo = RecInfo {
+  recInfoHeader :: Header,
+  recInfoOps ::  [Op]
+  }
 data Header = Header {
 
     headerPlayers :: [PlayerInfo]
@@ -189,10 +192,10 @@ gameParser :: AP.Parser RecInfo
 gameParser = do
   header <- parseHeader
   ops <- parseBody
-  void $ mapM prettyCommand $ ops
-  let cmds = catMaybes $ map opCommand ops
-      cmdTypes = L.nub $ map commandType cmds
-  traceM $ displayShowT (L.sort cmdTypes)
+  -- void $ mapM prettyCommand $ ops
+  let _cmds = catMaybes $ map opCommand ops
+      _cmdTypes = L.nub $ map commandType _cmds
+  -- traceM $ displayShowT (L.sort cmdTypes)
   pure $ RecInfo header ops
 
 
@@ -429,7 +432,6 @@ parsePlayerInfo numPlayers playerNumber = do
 parseObjectAndSeparator :: AP.Parser Object
 parseObjectAndSeparator = do
   o <- parseObject
-  showNextNBytes 10
   AP.skipMany $ AP.string gaiaMidObjectBreak <|> AP.string playerMidObjectBreaK
   pure o
 parseObject :: AP.Parser Object
