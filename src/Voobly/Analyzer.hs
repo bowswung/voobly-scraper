@@ -21,14 +21,14 @@ import qualified Data.ByteString.Base16 as Base16
 parseRec :: HasLogFunc env => RIO env ()
 parseRec = do
   bs <- BS.readFile "/code/recanalyst/test/recs/versions/up1.4.mgz"
-  case AP.eitherResult $ AP.parse gameParser bs of
+  case AP.parseOnly gameParser bs of
     Left err -> logError $ displayShow err
     Right h -> do
-      traceShowM h
       pure ()
 
 data Header = Header {
-    headerVersion :: Int
+
+    headerPlayers :: [PlayerInfo]
   } deriving (Show)
 
 
@@ -60,11 +60,66 @@ data ObjectExtra = ObjectExtraRes {
   objectExtraResAmount :: Float
 } deriving (Show)
 
+data OpSync = OpSync {
+  opSyncTime :: Int
+} deriving (Show)
+
+
+
+data Op =
+    OpTypeSync OpSync
+  | OpTypeCommand Int
+  | OpTypeMetaGameStart
+  | OpTypeMetaChat Text
+  | OpTypeUnhandled Int
+ deriving (Show)
+
 gameParser :: AP.Parser Header
 gameParser = do
   header <- parseHeader
+  actions <- parseBody
   pure header
 
+
+parseBody :: AP.Parser [Op]
+parseBody = do
+  AP.manyTill' parseAction AP.endOfInput
+
+
+parseAction :: AP.Parser Op
+parseAction = do
+  opType <- parseInt32
+  case opType of
+    1 -> do
+
+      l <- traceParse "length" parseInt32
+      command <- traceParse "command" parseInt8
+
+      case command of
+        _ -> do
+          skipN $ l -1
+          pure $ OpTypeCommand command
+    2 -> do
+      t <- parseInt32
+      u <- parseInt32
+      when (u == 0) $ skipN 28
+      skipN 12
+      pure $ OpTypeSync (OpSync t)
+    4 -> do
+      command <- parseInt32
+      case command of
+        -1 -> do
+          l <- parseInt32
+          c <- takeText l
+          pure $ OpTypeMetaChat c
+        500 -> do
+
+          skipN 20
+          pure OpTypeMetaGameStart
+
+        _ -> fail $ "unhandled meta command: " ++ show command
+    n | n > 1000 -> pure $ OpTypeUnhandled opType
+      | otherwise -> fail $  "unhandled opType: " ++ show opType
 
 parseHeader :: AP.Parser Header
 parseHeader = do
@@ -110,7 +165,7 @@ parseInflatedHeader = do
   somVar <- traceParse "somVar" $ parseInt32
   players <- sequence $ map (parsePlayerInfo numPlayers) [0..numPlayers-1]
   mapM prettyPlayer players
-  error "ADASD"
+  pure $ Header players
   --pure Header{..}
 
 prettyPlayer :: PlayerInfo -> AP.Parser ()
