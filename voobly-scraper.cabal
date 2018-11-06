@@ -52,7 +52,8 @@ library
     attoparsec,
     zlib,
     bytestring,
-    text
+    text,
+    base16-bytestring
 
   hs-source-dirs:      src
   ghc-options:         -Wall
