@@ -1,8 +1,10 @@
+{-# OPTIONS -fno-warn-deprecations #-}
 module Voobly.Analyzer where
 
 import RIO
 import qualified RIO.Text as T
 import qualified RIO.List as L
+import qualified Data.List as L.Partial
 import Control.Monad (replicateM)
 import qualified RIO.ByteString as BS
 import qualified RIO.ByteString.Lazy as BL
@@ -18,19 +20,29 @@ import Data.Text.Encoding
 import qualified Data.ByteString.Base16 as Base16
 --
 
-parseRec :: HasLogFunc env => RIO env ()
+parseRec :: HasLogFunc env => RIO env (Either String RecInfo)
 parseRec = do
+  logInfo "Starting parse"
   bs <- BS.readFile "/code/recanalyst/test/recs/versions/up1.4.mgz"
-  case AP.parseOnly gameParser bs of
-    Left err -> logError $ displayShow err
-    Right h -> do
-      pure ()
+  pure $ AP.parseOnly gameParser bs
 
+data RecInfo = RecInfo Header [Op]
 data Header = Header {
 
     headerPlayers :: [PlayerInfo]
+  , headerTiles :: [Tile]
   } deriving (Show)
 
+data Pos = Pos {
+  posX :: Float,
+  posY :: Float
+} deriving (Show)
+
+
+data PosSimple = PosSimple {
+  posSimpleX :: Int,
+  posSimpleY :: Int
+} deriving (Show)
 
 data Tile = Tile {
   tilePositionX :: Int,
@@ -65,40 +77,155 @@ data OpSync = OpSync {
 } deriving (Show)
 
 
+data Command =
+    CommandTypePrimary CommandPrimary
+  | CommandTypeMove CommandMove
+  | CommandTypeStance CommandStance
+  | CommandTypeGuard CommandGuard
+  | CommandTypeFollow CommandFollow
+  | CommandTypePatrol CommandPatrol
+  | CommandTypeFormation CommandFormation
+  | CommandTypeResearch CommandResearch
+  | CommandTypeBuild CommandBuild
+  | CommandTypeWall CommandWall
+  | CommandTypeTrain CommandTrain
+  | CommandUnparsed Int ByteString
+  deriving (Show)
+
+
+commandType :: Command -> Text
+commandType (CommandTypePrimary _) = "Primary"
+commandType (CommandTypeMove _) = "Move"
+commandType (CommandTypeStance _) = "Stance"
+commandType (CommandTypeGuard _) = "Guard"
+commandType (CommandTypeFollow _) = "Follow"
+commandType (CommandTypePatrol _) = "Patrol"
+commandType (CommandTypeFormation _) = "Formation"
+commandType (CommandTypeResearch _) = "Research"
+commandType (CommandTypeBuild _) = "Build"
+commandType (CommandTypeWall _) = "Wall"
+commandType (CommandTypeTrain _) = "Train"
+commandType (CommandUnparsed n _) = "Unparsed: " <> displayShowT n
+
+data CommandPrimary = CommandPrimary {
+  commandPrimaryPlayerId :: Int
+, commandPrimaryTargetId :: Int
+, commandPrimaryPos :: Pos
+, commandPrimaryUnitIds :: [Int]
+} deriving (Show)
+
+data CommandMove = CommandMove {
+  commandMovePlayerId :: Int
+, commandMovePos :: Pos
+, commandMoveUnitIds :: [Int]
+} deriving (Show)
+
+data CommandStance = CommandStance {
+  commandStanceStance :: Int
+, commandStanceUnitIds :: [Int]
+} deriving (Show)
+
+data CommandGuard = CommandGuard {
+  commandGuardGuarded :: Int
+, commandGuardUnitIds :: [Int]
+} deriving (Show)
+
+data CommandFollow = CommandFollow {
+  commandFollowFollowed :: Int
+, commandFollowUnitIds :: [Int]
+} deriving (Show)
+
+data CommandPatrol = CommandPatrol {
+  commandPatrolWaypoints :: [Pos]
+, commandPatrolUnitIds :: [Int]
+} deriving (Show)
+
+data CommandFormation = CommandFormation {
+  commandFormationPlayerId :: Int
+, commandFormationFormation :: Int
+, commandFormationUnitIds :: [Int]
+} deriving (Show)
+
+data CommandResearch = CommandResearch {
+  commandResearchBuildingId :: Int
+, commandResearchPlayerId :: Int
+, commandResearchResearch :: Int
+} deriving (Show)
+
+data CommandBuild = CommandBuild {
+  commandBuildPlayerId :: Int
+, commandBuildPos :: Pos
+, commandBuildBuildingType :: Int
+, commandBuildBuilders :: [Int]
+} deriving (Show)
+
+data CommandWall = CommandWall {
+  commandWallPlayerId :: Int
+, commandWallStartPos :: PosSimple
+, commandWallEndPos :: PosSimple
+, commandWallBuildingType :: Int
+, commandWallBuilders :: [Int]
+} deriving (Show)
+
+data CommandTrain = CommandTrain {
+  commandTrainBuildingId :: Int
+, commandTrainUnitType :: Int
+, commandTrainNumber :: Int
+} deriving (Show)
 
 data Op =
     OpTypeSync OpSync
-  | OpTypeCommand Int
+  | OpTypeCommand Command
   | OpTypeMetaGameStart
   | OpTypeMetaChat Text
   | OpTypeUnhandled Int
  deriving (Show)
 
-gameParser :: AP.Parser Header
+opCommand :: Op -> Maybe Command
+opCommand (OpTypeCommand c) = Just c
+opCommand _ = Nothing
+
+gameParser :: AP.Parser RecInfo
 gameParser = do
   header <- parseHeader
-  actions <- parseBody
-  pure header
+  ops <- parseBody
+  void $ mapM prettyCommand $ ops
+  let cmds = catMaybes $ map opCommand ops
+      cmdTypes = L.nub $ map commandType cmds
+  traceM $ displayShowT (L.sort cmdTypes)
+  pure $ RecInfo header ops
 
+
+prettyCommand :: Op -> AP.Parser ()
+prettyCommand (OpTypeCommand c) =
+  case c of
+    CommandTypePrimary CommandPrimary{..} -> do
+      traceM $ "Player " <> displayShowT commandPrimaryPlayerId <> " primaried " <> displayShowT commandPrimaryTargetId <> " with " <> displayShowT (length commandPrimaryUnitIds) <> " units"
+
+    CommandTypeMove CommandMove{..} -> do
+      traceM $ "Player " <> displayShowT commandMovePlayerId <> " moved to  " <> displayShowT (posX commandMovePos, posY commandMovePos) <> " with " <> displayShowT (length commandMoveUnitIds) <> " units"
+    CommandUnparsed _ _-> pure ()
+    _ -> traceM $ displayShowT $ commandType c
+
+prettyCommand _ = pure ()
 
 parseBody :: AP.Parser [Op]
 parseBody = do
-  AP.manyTill' parseAction AP.endOfInput
+  AP.manyTill' parseOp AP.endOfInput
 
 
-parseAction :: AP.Parser Op
-parseAction = do
+parseOp :: AP.Parser Op
+parseOp = do
   opType <- parseInt32
   case opType of
     1 -> do
 
-      l <- traceParse "length" parseInt32
-      command <- traceParse "command" parseInt8
-
-      case command of
-        _ -> do
-          skipN $ l -1
-          pure $ OpTypeCommand command
+      l <- parseInt32
+      command <- parseInt8
+      commandRaw <- AP.take $ l - 1
+      case AP.parseOnly (parseCommand command) commandRaw of
+        Left err -> fail err
+        Right c -> pure $ OpTypeCommand c
     2 -> do
       t <- parseInt32
       u <- parseInt32
@@ -121,6 +248,118 @@ parseAction = do
     n | n > 1000 -> pure $ OpTypeUnhandled opType
       | otherwise -> fail $  "unhandled opType: " ++ show opType
 
+
+
+
+parseCommand :: Int -> AP.Parser Command
+parseCommand 0 = do
+  commandPrimaryPlayerId <- parseInt8
+  skipN 2
+  commandPrimaryTargetId <- parseInt32
+  selectCount <- parseInt8
+  skipN 3
+  commandPrimaryPos <- parsePos
+  commandPrimaryUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypePrimary $ CommandPrimary{..}
+parseCommand 3 = do
+  commandMovePlayerId <- parseInt8
+  skipN 6
+  selectCount <- parseInt32
+  commandMovePos <- parsePos
+  commandMoveUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypeMove $ CommandMove{..}
+parseCommand 18 = do
+  selectCount <- parseInt8
+  commandStanceStance <- parseInt8
+  commandStanceUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypeStance $ CommandStance{..}
+parseCommand 19 = do
+  selectCount <- parseInt8
+  skipN 2
+  commandGuardGuarded <- parseInt32
+  commandGuardUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypeGuard $ CommandGuard{..}
+parseCommand 20 = do
+  selectCount <- parseInt8
+  skipN 2
+  commandFollowFollowed <- parseInt32
+  commandFollowUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypeFollow $ CommandFollow{..}
+parseCommand 21 = do
+  selectCount <- parseInt8
+  waypointCount <- parseInt8
+  skipN 1
+  commandPatrolWaypoints <- parseMultiplePos waypointCount
+  commandPatrolUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypePatrol $ CommandPatrol{..}
+parseCommand 22 = do
+  selectCount <- parseInt8
+  commandFormationPlayerId <- parseInt32
+  skipN 1
+  commandFormationFormation <- parseInt8
+  skipN 3
+  commandFormationUnitIds <- parseSelectedUnits selectCount
+  pure . CommandTypeFormation $ CommandFormation{..}
+
+--research
+parseCommand 101 = do
+  skipN 3
+  commandResearchBuildingId <- parseInt32
+  commandResearchPlayerId <- parseInt8
+  skipN 1
+  commandResearchResearch <- parseInt16
+  skipN 4
+  pure . CommandTypeResearch $ CommandResearch{..}
+
+-- build
+parseCommand 102 = do
+  selectCount <- parseInt8
+  commandBuildPlayerId <- parseInt8
+  skipN 1
+  commandBuildPos <- parsePos
+  commandBuildBuildingType <- parseInt16
+  skipN 10
+  commandBuildBuilders <- parseSelectedUnits selectCount
+  pure . CommandTypeBuild $ CommandBuild{..}
+--wall
+parseCommand 105 = do
+  selectCount <- parseInt8
+  commandWallPlayerId <- parseInt8
+  commandWallStartPos <- PosSimple <$> parseInt8 <*> parseInt8
+  commandWallEndPos <- PosSimple <$> parseInt8 <*> parseInt8
+  skipN 1
+  commandWallBuildingType <- parseInt16
+  skipN 6
+  commandWallBuilders <- parseSelectedUnits selectCount
+  pure . CommandTypeWall $ CommandWall{..}
+
+
+-- train
+parseCommand 119 = do
+  skipN 3
+  commandTrainBuildingId <- parseInt32
+  commandTrainUnitType <- parseInt16
+  commandTrainNumber <- parseInt16
+  pure . CommandTypeTrain $ CommandTrain{..}
+
+parseCommand n = CommandUnparsed n <$> AP.takeByteString
+
+parseSelectedUnits :: Int -> AP.Parser [Int]
+parseSelectedUnits 255 = pure []
+parseSelectedUnits n = replicateM n parseInt32
+
+parsePos :: AP.Parser Pos
+parsePos = do
+  x <- parseFloat 4
+  y <- parseFloat 4
+  pure $ Pos x y
+
+parseMultiplePos :: Int -> AP.Parser [Pos]
+parseMultiplePos n = do
+  xs <- replicateM 10 $ parseFloat 4
+  ys <- replicateM 10 $ parseFloat 4
+  pure $ map (\(x,y)->Pos x y) $ L.Partial.take n $  zip xs ys
+
 parseHeader :: AP.Parser Header
 parseHeader = do
   headerLen <- parseInt32
@@ -136,36 +375,36 @@ ignore _ _ = Nothing
 
 parseInflatedHeader :: AP.Parser Header
 parseInflatedHeader = do
-  headerVersion <- traceParse "headerVersion" $ takeText 8
-  bs <- parseFloat 4
+  _headerVersion <- takeText 8
+  _bs <- parseFloat 4
   _includeAi <- parseInt32
   skipN 4
-  gameSpeed <- traceParse "gameSpeed" parseInt32
+  _gameSpeed <-  parseInt32
   skipN 37
 
-  pov <- traceParse "pov"  parseInt16
-  numPlayers <- traceParse "numPlayers" parseInt8 -- this includes gaia
-  gameMode <- traceParse "gameMode" parseInt16
+  _pov <-  parseInt16
+  numPlayers <-  parseInt8 -- this includes gaia
+  _gameMode <-  parseInt16
   skipN 60
-  mapSizeX <- traceParse "mapSizeX" parseInt32
-  mapSizeY <- traceParse "mapSizeY" parseInt32
-  zones <- traceParse "zones" parseInt32
-  allVisible <- traceParse "allVisible" $ parseBool
-  fogOfWar <- traceParse "fogOfWar" $ parseBool
+  mapSizeX <-  parseInt32
+  mapSizeY <-  parseInt32
+  _zones <- parseInt32
+  _allVisible <- parseBool
+  _fogOfWar <-  parseBool
   tiles <- sequence $ map parseTile $ [(x,y) | y <- [0 .. mapSizeY -1], x <- [0.. mapSizeX-1]]
-  obstructions <- traceParse "obstructions" $ parseInt32
+  obstructions <-  parseInt32
   skipN $ 4 + obstructions * 4
-  replicateM obstructions $ parseInt32 >>= (skipN . ((*) 8))
+  void $ replicateM obstructions $ parseInt32 >>= (skipN . ((*) 8))
 
-  mapSizeX2 <- traceParse "mapSizeX2" parseInt32
-  mapSizeY2 <- traceParse "mapSizeY2" parseInt32
+  mapSizeX2 <-  parseInt32
+  mapSizeY2 <-  parseInt32
   skipN $ mapSizeX2 * mapSizeY2 * 4 -- skip visibility mapSizeX2
   skipN 4
   skipN =<< fmap (* 27) parseInt32
-  somVar <- traceParse "somVar" $ parseInt32
+  skipN 4
   players <- sequence $ map (parsePlayerInfo numPlayers) [0..numPlayers-1]
-  mapM prettyPlayer players
-  pure $ Header players
+  void $ mapM prettyPlayer players
+  pure $ Header players tiles
   --pure Header{..}
 
 prettyPlayer :: PlayerInfo -> AP.Parser ()
@@ -181,7 +420,7 @@ parsePlayerInfo numPlayers playerNumber = do
 
 
   skipN $ numPlayers + 43
-  playerInfoName <- traceParse "playerInfoName" parseString
+  playerInfoName <- parseString
   skipToBreak existObjectsBreak
   objs <- AP.manyTill parseObjectAndSeparator (AP.string playerInfoEndBreak)
   --diplomacies <- traceParse $ replicateM 9
@@ -195,19 +434,19 @@ parseObjectAndSeparator = do
   pure o
 parseObject :: AP.Parser Object
 parseObject = do
-  objType <- traceParse "objType" parseInt8
-  objOwner <- traceParse "objOwner" parseInt8
-  objUnitId <- traceParse "objUnitId" parseInt16
+  objType <-  parseInt8
+  objOwner <-  parseInt8
+  objUnitId <-  parseInt16
   let obj = Object objType objOwner objUnitId
   case objType of
     10 -> do
       skipN 19
-      posX <- traceParse "posX" $ parseFloat 4
-      posY <- traceParse "posY"  $ parseFloat 4
+      posX <-  parseFloat 4
+      posY <- parseFloat 4
       skipN 12
       --ns <- traceParse "Unknown" $ replicateM 10 parseInt16
-      resType <- traceParse "resType"  parseInt16
-      resAmount <- traceParse "resAmount"  $ parseFloat 4
+      resType <-  parseInt16
+      resAmount <- parseFloat 4
 
       skipN 14
       pure $ obj (Just posX) (Just posY) (Just $ ObjectExtraRes resType resAmount)
@@ -215,14 +454,14 @@ parseObject = do
     30 -> skipN 200 >> (pure  $ (obj Nothing Nothing Nothing))
     70 -> do
       skipN 19
-      posX <- traceParse "posX" $ parseFloat 4
-      posY <- traceParse "posY"  $ parseFloat 4
+      posX <- parseFloat 4
+      posY <-  parseFloat 4
       skipToBreak specificObjectBreak
       pure  $ obj (Just posX) (Just posY) Nothing
     80 -> do
       skipN 19
-      posX <- traceParse "posX" $ parseFloat 4
-      posY <- traceParse "posY"  $ parseFloat 4
+      posX <- parseFloat 4
+      posY <-  parseFloat 4
       skipToBreak specificObjectBreak
       skipN 127
       pure  $ obj (Just posX) (Just posY) Nothing
