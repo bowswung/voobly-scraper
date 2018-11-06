@@ -4,7 +4,8 @@ module Voobly.Scraper where
 
 
 import Voobly.DB
-import qualified Voobly.Analyzer as Analyzer
+import qualified Data.Mgz.Deserialise as Deserialiser
+import qualified Data.Mgz.Simulate as Simulate
 
 
 import RIO
@@ -215,7 +216,13 @@ runScraper = do
   manager <- liftIO $ newManager tlsManagerSettings
   withLogFunc logOptions' $ \lf -> do
     case runCommand options of
-      CommandParse -> runRIO lf Analyzer.parseRec
+      CommandParse -> runRIO lf $ do
+        rinfo <- Deserialiser.parseRec
+        case rinfo of
+          Left err -> logError $ displayShow err
+          Right r -> do
+            let s = Simulate.simulate r
+            Simulate.replay s
       c -> do
         withAcid $ \acid -> do
           let appEnv = AppEnv lf options acid

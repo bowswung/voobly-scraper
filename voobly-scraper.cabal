@@ -14,9 +14,12 @@ cabal-version:       >= 1.24
 library
   exposed-modules:
     Voobly.Scraper
-    Voobly.Analyzer
     Voobly.DB
     Voobly.TH
+    Data.Mgz.Deserialise
+    Data.Mgz.Simulate
+
+
 
   build-depends:
     base,
