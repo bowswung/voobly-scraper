@@ -39,45 +39,46 @@ data Header = Header {
 data Pos = Pos {
   posX :: Float,
   posY :: Float
-} deriving (Show)
+}   deriving (Show, Eq, Ord)
+
 
 
 data PosSimple = PosSimple {
   posSimpleX :: Int,
   posSimpleY :: Int
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data Tile = Tile {
   tilePositionX :: Int,
   tilePositionY :: Int,
   tileTerrain :: Int,
   tileElevation :: Int
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data PlayerInfo = PlayerInfo {
   playerInfoNumber :: Int ,
   playerInfoName :: Text,
-  playerInfoObjects :: [Object]
-} deriving (Show)
+  playerInfoObjects :: [ObjectRaw]
+} deriving (Show, Eq, Ord)
 
 
-data Object = Object {
-  objectType :: Int,
-  objectOwner :: Int,
-  objectUnitId :: Int,
-  objectPosX :: Maybe Float,
-  objectPosY :: Maybe Float,
-  objectExtra :: Maybe ObjectExtra
-} deriving (Show)
+data ObjectRaw = ObjectRaw {
+  objectRawType :: Int,
+  objectRawOwner :: Int,
+  objectRawUnitId :: Int,
+  objectRawPosX :: Maybe Float,
+  objectRawPosY :: Maybe Float,
+  objectRawExtra :: Maybe ObjectRawExtra
+} deriving (Show, Eq, Ord)
 
-data ObjectExtra = ObjectExtraRes {
-  objectExtraResType :: Int,
-  objectExtraResAmount :: Float
-} deriving (Show)
+data ObjectRawExtra = ObjectRawExtraRes {
+  objectRawExtraResType :: Int,
+  objectRawExtraResAmount :: Float
+} deriving (Show, Eq, Ord)
 
 data OpSync = OpSync {
   opSyncTime :: Int
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 
 data Command =
@@ -93,7 +94,8 @@ data Command =
   | CommandTypeWall CommandWall
   | CommandTypeTrain CommandTrain
   | CommandUnparsed Int ByteString
-  deriving (Show)
+    deriving (Show, Eq, Ord)
+
 
 
 commandType :: Command -> Text
@@ -115,52 +117,52 @@ data CommandPrimary = CommandPrimary {
 , commandPrimaryTargetId :: Int
 , commandPrimaryPos :: Pos
 , commandPrimaryUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandMove = CommandMove {
   commandMovePlayerId :: Int
 , commandMovePos :: Pos
 , commandMoveUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandStance = CommandStance {
   commandStanceStance :: Int
 , commandStanceUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandGuard = CommandGuard {
   commandGuardGuarded :: Int
 , commandGuardUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandFollow = CommandFollow {
   commandFollowFollowed :: Int
 , commandFollowUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandPatrol = CommandPatrol {
   commandPatrolWaypoints :: [Pos]
 , commandPatrolUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandFormation = CommandFormation {
   commandFormationPlayerId :: Int
 , commandFormationFormation :: Int
 , commandFormationUnitIds :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandResearch = CommandResearch {
   commandResearchBuildingId :: Int
 , commandResearchPlayerId :: Int
 , commandResearchResearch :: Int
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandBuild = CommandBuild {
   commandBuildPlayerId :: Int
 , commandBuildPos :: Pos
 , commandBuildBuildingType :: Int
 , commandBuildBuilders :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandWall = CommandWall {
   commandWallPlayerId :: Int
@@ -168,13 +170,13 @@ data CommandWall = CommandWall {
 , commandWallEndPos :: PosSimple
 , commandWallBuildingType :: Int
 , commandWallBuilders :: [Int]
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data CommandTrain = CommandTrain {
   commandTrainBuildingId :: Int
 , commandTrainUnitType :: Int
 , commandTrainNumber :: Int
-} deriving (Show)
+} deriving (Show, Eq, Ord)
 
 data Op =
     OpTypeSync OpSync
@@ -192,7 +194,7 @@ gameParser :: AP.Parser RecInfo
 gameParser = do
   header <- parseHeader
   ops <- parseBody
-  -- void $ mapM prettyCommand $ ops
+  --void $ mapM prettyCommand $ ops
   let _cmds = catMaybes $ map opCommand ops
       _cmdTypes = L.nub $ map commandType _cmds
   -- traceM $ displayShowT (L.sort cmdTypes)
@@ -210,6 +212,7 @@ prettyCommand (OpTypeCommand c) =
     CommandUnparsed _ _-> pure ()
     _ -> traceM $ displayShowT $ commandType c
 
+prettyCommand (OpTypeSync (OpSync t)) = traceM $ "SYNC: " <> displayShowT t
 prettyCommand _ = pure ()
 
 parseBody :: AP.Parser [Op]
@@ -414,9 +417,9 @@ prettyPlayer :: PlayerInfo -> AP.Parser ()
 prettyPlayer PlayerInfo{..} = do
   traceM $ "Player: " <> displayShowT playerInfoNumber <> " called " <> displayShowT playerInfoName
   traceM $ "Total objects: " <> displayShowT (length playerInfoObjects)
-  traceM $ "Map objects: " <> displayShowT (length $ filter ((==) 10 . objectType) playerInfoObjects)
-  traceM $ "Creatables: " <> displayShowT (length $ filter ((==) 70 . objectType) playerInfoObjects)
-  traceM $ "Buildings: " <> displayShowT (length $ filter ((==) 80 . objectType) playerInfoObjects)
+  traceM $ "Map objects: " <> displayShowT (length $ filter ((==) 10 . objectRawType) playerInfoObjects)
+  traceM $ "Creatables: " <> displayShowT (length $ filter ((==) 70 . objectRawType) playerInfoObjects)
+  traceM $ "Buildings: " <> displayShowT (length $ filter ((==) 80 . objectRawType) playerInfoObjects)
 
 parsePlayerInfo :: Int -> Int -> AP.Parser PlayerInfo
 parsePlayerInfo numPlayers playerNumber = do
@@ -429,17 +432,17 @@ parsePlayerInfo numPlayers playerNumber = do
   --diplomacies <- traceParse $ replicateM 9
   pure $ PlayerInfo playerNumber playerInfoName objs
 
-parseObjectAndSeparator :: AP.Parser Object
+parseObjectAndSeparator :: AP.Parser ObjectRaw
 parseObjectAndSeparator = do
   o <- parseObject
   AP.skipMany $ AP.string gaiaMidObjectBreak <|> AP.string playerMidObjectBreaK
   pure o
-parseObject :: AP.Parser Object
+parseObject :: AP.Parser ObjectRaw
 parseObject = do
   objType <-  parseInt8
   objOwner <-  parseInt8
   objUnitId <-  parseInt16
-  let obj = Object objType objOwner objUnitId
+  let obj = ObjectRaw objType objOwner objUnitId
   case objType of
     10 -> do
       skipN 19
@@ -451,7 +454,7 @@ parseObject = do
       resAmount <- parseFloat 4
 
       skipN 14
-      pure $ obj (Just posX) (Just posY) (Just $ ObjectExtraRes resType resAmount)
+      pure $ obj (Just posX) (Just posY) (Just $ ObjectRawExtraRes resType resAmount)
 
     30 -> skipN 200 >> (pure  $ (obj Nothing Nothing Nothing))
     70 -> do
