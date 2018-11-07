@@ -59,7 +59,8 @@ library
     zlib,
     bytestring,
     text,
-    base16-bytestring
+    base16-bytestring,
+    text-format
 
   hs-source-dirs:      src
   ghc-options:         -Wall
