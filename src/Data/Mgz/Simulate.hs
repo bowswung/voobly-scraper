@@ -261,17 +261,18 @@ data GameState = GameState {
 simulate :: HasLogFunc env => RecInfo -> RIO env GameState
 simulate RecInfo{..} = do
   logInfo "Start simulating"
-  logInfo "Building events"
+  logInfo "Building base events"
   let initialGS = GameState IxSet.empty IxSet.empty
 
-  let sWithHistories = gameState $ execState (mapM addToHistory recInfoOps) (SimState 0 initialGS [])
-  logInfo $ "Total events: " <> displayShow (IxSet.size . events $ sWithHistories )
+  let sBasic = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 initialGS [])
+  logInfo $ "Total events: " <> displayShow (IxSet.size . events $ sBasic)
+
+  logInfo "Making simple inferences"
+  let sWithSimpleInferences = gameState $ execState makeSimpleInferences (SimState 0 sBasic [])
 
 
-  --logInfo $ "Found units: " <> displayShow (IxSet.size . units $ sWithHistories )
-  --logInfo $ "Found buildings: " <> displayShow (IxSet.size . buildings $ sWithHistories )
 
-  pure $ sWithHistories
+  pure $ sWithSimpleInferences
 
 
 
@@ -287,14 +288,19 @@ data SimState = SimState {
 
 type Sim a = State SimState a
 
-addToHistory :: Op -> Sim ()
-addToHistory (OpTypeSync OpSync{..}) = modify' (\ss -> ss{ticks = ticks ss + opSyncTime})
-addToHistory (OpTypeCommand cmd) = addCommandToHistory cmd
-addToHistory _ = pure ()
+makeSimpleInferences :: Sim ()
+makeSimpleInferences = do
+  pure ()
 
 
-addCommandToHistory :: Command -> Sim ()
-addCommandToHistory c@(CommandTypePrimary CommandPrimary{..}) = do
+buildBasicEvents :: Op -> Sim ()
+buildBasicEvents (OpTypeSync OpSync{..}) = modify' (\ss -> ss{ticks = ticks ss + opSyncTime})
+buildBasicEvents (OpTypeCommand cmd) = addCommandAsEvent cmd
+buildBasicEvents _ = pure ()
+
+
+addCommandAsEvent :: Command -> Sim ()
+addCommandAsEvent c@(CommandTypePrimary CommandPrimary{..}) = do
   target <- getObject commandPrimaryTargetId
   uids <- getUnitIds commandPrimaryUnitIds
 
@@ -306,7 +312,7 @@ addCommandToHistory c@(CommandTypePrimary CommandPrimary{..}) = do
     }
   addRealEvent c (Just commandPrimaryPlayerId) eType
 
-addCommandToHistory c@(CommandTypeMove CommandMove{..}) = do
+addCommandAsEvent c@(CommandTypeMove CommandMove{..}) = do
   uids <- getUnitIds commandMoveUnitIds
   units <- getUnitsForPlayer uids commandMovePlayerId
   let eType = EventTypeMove $ EventMove {
@@ -315,7 +321,7 @@ addCommandToHistory c@(CommandTypeMove CommandMove{..}) = do
     }
   addRealEvent c (Just commandMovePlayerId) eType
 
-addCommandToHistory c@(CommandTypeStance CommandStance{..}) = do
+addCommandAsEvent c@(CommandTypeStance CommandStance{..}) = do
   uids <- getUnitIds commandStanceUnitIds
   units <- mapM getUnit uids
   let eType = EventTypeMilitaryDisposition $ EventMilitaryDisposition {
@@ -324,7 +330,7 @@ addCommandToHistory c@(CommandTypeStance CommandStance{..}) = do
     }
   addRealEvent c Nothing eType
 
-addCommandToHistory c@(CommandTypeFormation CommandFormation{..}) = do
+addCommandAsEvent c@(CommandTypeFormation CommandFormation{..}) = do
   uids <- getUnitIds commandFormationUnitIds
   units <- getUnitsForPlayer uids commandFormationPlayerId
 
@@ -334,7 +340,7 @@ addCommandToHistory c@(CommandTypeFormation CommandFormation{..}) = do
     }
   addRealEvent c (Just commandFormationPlayerId) eType
 
-addCommandToHistory c@(CommandTypeGuard CommandGuard{..}) = do
+addCommandAsEvent c@(CommandTypeGuard CommandGuard{..}) = do
   target <- getObject commandGuardGuarded
   uids <- getUnitIds commandGuardUnitIds
   units <- mapM getUnit uids
@@ -346,7 +352,7 @@ addCommandToHistory c@(CommandTypeGuard CommandGuard{..}) = do
     }
   addRealEvent c Nothing eType
 
-addCommandToHistory c@(CommandTypeFollow CommandFollow{..}) = do
+addCommandAsEvent c@(CommandTypeFollow CommandFollow{..}) = do
   target <- getObject commandFollowFollowed
   uids <- getUnitIds commandFollowUnitIds
   units <- mapM getUnit uids
@@ -358,7 +364,7 @@ addCommandToHistory c@(CommandTypeFollow CommandFollow{..}) = do
     }
   addRealEvent c Nothing eType
 
-addCommandToHistory c@(CommandTypePatrol CommandPatrol{..}) = do
+addCommandAsEvent c@(CommandTypePatrol CommandPatrol{..}) = do
   uids <- getUnitIds commandPatrolUnitIds
   units <- mapM getUnit uids
 
@@ -368,7 +374,7 @@ addCommandToHistory c@(CommandTypePatrol CommandPatrol{..}) = do
     }
   addRealEvent c Nothing eType
 
-addCommandToHistory c@(CommandTypeBuild CommandBuild{..}) = do
+addCommandAsEvent c@(CommandTypeBuild CommandBuild{..}) = do
   uids <- getUnitIds commandBuildBuilders
   units <- getUnitsForPlayer uids commandBuildPlayerId
 
@@ -381,7 +387,7 @@ addCommandToHistory c@(CommandTypeBuild CommandBuild{..}) = do
   addRealEvent c (Just commandBuildPlayerId) eType
 
 
-addCommandToHistory c@(CommandTypeResearch CommandResearch{..}) = do
+addCommandAsEvent c@(CommandTypeResearch CommandResearch{..}) = do
   building <- getBuildingForPlayer commandResearchBuildingId commandResearchPlayerId
 
   let eType = EventTypeResearch $ EventResearch {
@@ -390,7 +396,7 @@ addCommandToHistory c@(CommandTypeResearch CommandResearch{..}) = do
     }
   addRealEvent c (Just commandResearchPlayerId) eType
 
-addCommandToHistory c@(CommandTypeTrain CommandTrain{..}) = do
+addCommandAsEvent c@(CommandTypeTrain CommandTrain{..}) = do
   building <- getBuilding commandTrainBuildingId
   let eType = EventTypeTrain $ EventTrain {
       eventTrainBuilding = buildingId building
@@ -399,7 +405,7 @@ addCommandToHistory c@(CommandTypeTrain CommandTrain{..}) = do
     }
   addRealEvent c Nothing eType
 
-addCommandToHistory _ = pure ()
+addCommandAsEvent _ = pure ()
 
 getUnitIds :: [Int] -> Sim [Int]
 getUnitIds [] = do
@@ -581,7 +587,7 @@ renderEvent Event{..} = do
 
 renderPlayer :: Maybe PlayerId -> Sim TL.Builder
 renderPlayer Nothing = pure "Unknown"
-renderPlayer (Just (PlayerId i)) = pure $ "Player " <> displayShowB i
+renderPlayer (Just (PlayerId i)) = pure $ "P" <> displayShowB i
 
 renderPos :: Pos -> TL.Builder
 renderPos (Pos x y) = "(" <> displayShowB x <> ", " <> displayShowB y <> ")"
@@ -609,12 +615,14 @@ renderObjectType oid = do
   m <- lookupObject oid
   case m of
     Nothing -> pure $ "NOT FOUND"
-    Just Object{..} ->
-      case objectInfo of
-        ObjectInfoUnit a -> renderUnit a
-        ObjectInfoBuilding a -> renderBuilding a
-        ObjectInfoResource a -> renderResource a
-        ObjectInfoUnknown -> pure $ "Unknown"
+    Just Object{..} -> do
+      t <- case objectInfo of
+            ObjectInfoUnit a -> renderUnit a
+            ObjectInfoBuilding a -> renderBuilding a
+            ObjectInfoResource a -> renderResource a
+            ObjectInfoUnknown -> pure $ "Unknown"
+      p <- renderPlayer objectPlayer
+      pure $ p <> " " <> t
 
 renderUnits :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderUnits = renderObjects
