@@ -97,6 +97,7 @@ data Command =
   | CommandTypeWaypoint CommandWaypoint
   | CommandTypeStop CommandStop
   | CommandTypeRally CommandRally
+  | CommandTypeDelete CommandDelete
   | CommandUnparsed Int ByteString
     deriving (Show, Eq, Ord)
 
@@ -117,6 +118,7 @@ commandType (CommandTypeTrain _) = "Train"
 commandType (CommandTypeWaypoint _) = "Waypoint"
 commandType (CommandTypeStop _) = "Stop"
 commandType (CommandTypeRally _) = "Rally"
+commandType (CommandTypeDelete _) = "Delete"
 commandType (CommandUnparsed n _) = "Unparsed: " <> displayShowT n
 
 
@@ -204,6 +206,11 @@ data CommandRally = CommandRally {
 , commandRallyTargetType :: Maybe Int
 , commandRallyPos :: Pos
 , commandRallySelectedBuildingIds :: [Int]
+} deriving (Show, Eq, Ord)
+
+data CommandDelete = CommandDelete {
+  commandDeleteObjectId :: Int
+, commandDeletePlayerId :: Int
 } deriving (Show, Eq, Ord)
 
 data Op =
@@ -402,6 +409,16 @@ parseCommand 120 = do
   commandRallyPos <- parsePos
   commandRallySelectedBuildingIds <- parseSelectedUnits selectCount
   pure . CommandTypeRally $ CommandRally{..}
+
+
+parseCommand 106 = do
+  skipN 3
+  commandDeleteObjectId <- parseInt32
+  commandDeletePlayerId <- parseInt8
+  skipN 3
+  pure . CommandTypeDelete $ CommandDelete{..}
+
+
 
 parseCommand n = CommandUnparsed n <$> AP.takeByteString
 

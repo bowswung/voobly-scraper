@@ -315,6 +315,10 @@ data EventRally = EventRally {
   eventRallyBuildings :: [BuildingId]
 }  deriving (Show, Eq, Ord)
 
+data EventDelete = EventDelete {
+  eventDeleteObjectId :: ObjectId
+}  deriving (Show, Eq, Ord)
+
 data EventType =
     EventTypeMove EventMove
   | EventTypeAttack EventAttack
@@ -330,6 +334,7 @@ data EventType =
   | EventTypeStopGeneral EventStopGeneral
   | EventTypeWaypoint EventWaypoint
   | EventTypeRally EventRally
+  | EventTypeDelete EventDelete
   deriving (Show, Eq, Ord)
 
 data Unit = Unit {
@@ -467,6 +472,7 @@ data EventTypeW =
   | EventTypeWStopGeneral
   | EventTypeWWaypoint
   | EventTypeWRally
+  | EventTypeWDelete
   deriving (Show, Eq, Ord)
 
 eventTypeW :: Event -> EventTypeW
@@ -486,6 +492,7 @@ eventTypeW e =
     EventTypeStopGeneral _ -> EventTypeWStopGeneral
     EventTypeWaypoint _ -> EventTypeWWaypoint
     EventTypeRally _ -> EventTypeWRally
+    EventTypeDelete _ -> EventTypeWDelete
 
 eventActingObjectsIdx :: Event -> [ObjectId]
 eventActingObjectsIdx e =
@@ -504,6 +511,7 @@ eventActingObjectsIdx e =
     EventTypeStopGeneral EventStopGeneral{..} -> eventStopSelectedIds
     EventTypeWaypoint EventWaypoint{..} -> eventWaypointSelectedObjects
     EventTypeRally EventRally{..} -> map toObjectId eventRallyBuildings
+    EventTypeDelete EventDelete{..} -> []
 
 
 newtype MapTileIndex = MapTileIndex (Int, Int) deriving (Eq, Ord, Show)
@@ -919,8 +927,16 @@ addCommandAsEvent c@(CommandTypeRally CommandRally{..}) = do
     }
   addRealEvent c Nothing eType
 
+addCommandAsEvent c@(CommandTypeDelete CommandDelete{..}) = do
+  target <- getObjectForPlayer commandDeleteObjectId (Just commandDeletePlayerId)
 
-addCommandAsEvent _ = pure ()
+  let eType = EventTypeDelete $ EventDelete {
+      eventDeleteObjectId = objectId target
+    }
+  addRealEvent c (Just commandDeletePlayerId) eType
+
+addCommandAsEvent (CommandTypeWall _) = pure ()
+addCommandAsEvent (CommandUnparsed _ _) = pure ()
 
 getSelectedObjectIds :: EitherInheritOrIds -> Int -> Sim [Int]
 getSelectedObjectIds (Left ()) pId = do
@@ -1163,7 +1179,9 @@ renderEvent Event{..} = do
             Just t -> do
               tr <- renderObject t
               pure $ "Rallied " <> b <> " to " <> tr <> " at map position " <> renderPos eventRallyPos
-
+        (EventTypeDelete (EventDelete{..})) -> do
+          t <- renderObject eventDeleteObjectId
+          pure $ "Deleted " <> t
 
     simOrReal :: TL.Builder
     simOrReal =
