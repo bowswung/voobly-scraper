@@ -66,8 +66,9 @@ data ObjectRaw = ObjectRaw {
   objectRawType :: Int,
   objectRawOwner :: Int,
   objectRawUnitId :: Int,
-  objectRawPosX :: Maybe Float,
-  objectRawPosY :: Maybe Float,
+  objectRawHitpoints :: Int,
+  objectRawObjectId :: Int,
+  objectRawPos :: Pos,
   objectRawExtra :: Maybe ObjectRawExtra
 } deriving (Show, Eq, Ord)
 
@@ -293,7 +294,9 @@ parseCommand 0 = do
   skipN 3
   commandPrimaryPos <- parsePos
   commandPrimaryUnitIds <- parseSelectedUnitsInherit selectCount
-  pure . CommandTypePrimary $ CommandPrimary{..}
+  if commandPrimaryTargetId < 1  -- is this something to do with fog of war? For now interpret as a move command
+    then pure . CommandTypeMove $ CommandMove commandPrimaryPlayerId commandPrimaryPos commandPrimaryUnitIds
+    else pure . CommandTypePrimary $ CommandPrimary{..}
 parseCommand 3 = do
   commandMovePlayerId <- parseInt8
   skipN 6
@@ -394,8 +397,8 @@ parseCommand 120 = do
   skipN 2
   mto <- parseInt32
   mtt <- parseInt32
-  let commandRallyTargetObject = if mto == 4294967295 then Nothing else Just mto
-      commandRallyTargetType = if mtt == 4294901760 then Nothing else Just mtt
+  let commandRallyTargetObject = if mto == -1 then Nothing else Just mto
+      commandRallyTargetType = if mtt == 65535 then Nothing else Just mtt
   commandRallyPos <- parsePos
   commandRallySelectedBuildingIds <- parseSelectedUnits selectCount
   pure . CommandTypeRally $ CommandRally{..}
@@ -502,37 +505,33 @@ parseObject = do
   objType <-  parseInt8
   objOwner <-  parseInt8
   objUnitId <-  parseInt16
-  let obj = ObjectRaw objType objOwner objUnitId
+  skipN 6
+  objHitpoints <- parseInt32
+  skipN 4
+  objId <- parseInt32
+  skipN 1
+  pos <- parsePos
+  let obj = ObjectRaw objType objOwner objUnitId objHitpoints objId pos
   case objType of
     -- resources and similar?
     10 -> do
-      skipN 19
-      posX <-  parseFloat 4
-      posY <- parseFloat 4
       skipN 12
       --ns <- traceParse "Unknown" $ replicateM 10 parseInt16
       resType <-  parseInt16
       resAmount <- parseFloat 4
-
       skipN 14
-      pure $ obj (Just posX) (Just posY) (Just $ ObjectRawExtraRes resType resAmount)
+      pure $ obj (Just $ ObjectRawExtraRes resType resAmount)
 
-    30 -> showNextNBytes 200 >> skipN 200 >> (pure  $ (obj Nothing Nothing Nothing))
+    30 -> skipN 173 >> (pure  $ (obj Nothing))
     -- units
     70 -> do
-      skipN 19
-      posX <- parseFloat 4
-      posY <-  parseFloat 4
       skipToBreak specificObjectBreak
-      pure  $ obj (Just posX) (Just posY) Nothing
+      pure  $ obj Nothing
     -- buildings
     80 -> do
-      skipN 19
-      posX <- parseFloat 4
-      posY <-  parseFloat 4
       skipToBreak specificObjectBreak
       skipN 127
-      pure  $ obj (Just posX) (Just posY) Nothing
+      pure  $ obj  Nothing
     _ -> fail $ "Unknown object type " ++ show objType
 
 existObjectsBreak :: ByteString

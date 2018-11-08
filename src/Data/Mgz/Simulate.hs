@@ -17,6 +17,7 @@ import Data.Proxy(Proxy(..))
 import qualified Data.Text.Format as F
 import qualified Data.Text.Buildable as F.Buildable
 import qualified Data.Text.Lazy.Builder as TL
+import qualified Data.Text as T
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy as TL
 import qualified RIO.HashMap as HM
@@ -25,6 +26,9 @@ mNonEmpty :: Maybe a -> Maybe (NonEmpty a)
 mNonEmpty Nothing = Nothing
 mNonEmpty (Just a) = pure $ a :| []
 
+nonEmptyPartial :: [x] -> NonEmpty x
+nonEmptyPartial [] = error "Empty list in nonEmptyPartial"
+nonEmptyPartial (x:xs) = x :| xs
 
 elemNonEmpty :: Eq a => a -> NonEmpty a -> Bool
 elemNonEmpty a ne = a `elem` NE.toList ne
@@ -38,8 +42,13 @@ newtype UnitId = UnitId ObjectId deriving (Show, Eq, Ord)
 newtype BuildingId = BuildingId ObjectId deriving (Show, Eq, Ord)
 newtype ResourceId = ResourceId ObjectId deriving (Show, Eq, Ord)
 
-newtype PlayerId = PlayerId Int deriving (Show, Eq, Ord) -- 1,2 etc - same as the rec file
+newtype PlayerId = PlayerId Int deriving (Show, Eq, Ord, Generic) -- 1,2 etc - same as the rec file
+instance Hashable PlayerId
 newtype EventId = EventId Int deriving (Show, Eq, Ord) -- sequence
+
+isGaia :: PlayerId -> Bool
+isGaia (PlayerId 0) = True
+isGaia _ = False
 
 class ToObjectId a where
   toObjectId :: a -> ObjectId
@@ -79,6 +88,19 @@ unitId (ObjectUnit o) = UnitId . objectId $ o
 buildingId :: ObjectBuilding -> BuildingId
 buildingId (ObjectBuilding o) = BuildingId . objectId $ o
 
+
+assignAttackingBuildingType :: BuildingType -> BuildingType
+assignAttackingBuildingType BuildingTypeUnknown = BuildingTypeOneOf $ nonEmptyPartial attackingBuildingTypes
+assignAttackingBuildingType (BuildingTypeOneOf a) =
+  case filter (\t -> t `elem` attackingBuildingTypes) $ NE.toList a of
+    [] -> error $ "Expected to find at least one attacking building type in " ++ show a
+    [x] -> BuildingTypeKnown x
+    xs -> BuildingTypeOneOf $ nonEmptyPartial xs
+assignAttackingBuildingType (BuildingTypeKnown t) =
+  case t `elem` attackingBuildingTypes of
+    True -> BuildingTypeKnown t
+    False -> error $ "Expected known building to be an attacking building but it was a " ++ show t
+
 data UnitType =
     UnitTypeUnknown
   | UnitTypeVillager
@@ -91,6 +113,53 @@ data MilitaryType =
   | MilitaryTypeKnown ObjectType
   | MilitaryTypeOneOf (NonEmpty ObjectType)
   deriving (Show, Eq, Ord)
+
+
+doesObjectMatch :: Object -> (ObjectType -> Bool)-> Bool
+doesObjectMatch o f =
+  case fmap NE.toList $ toObjectType o of
+    Just (x:xs) -> and $ map f (x:xs)
+    _ -> False
+
+isObjectVillager :: Object -> Bool
+isObjectVillager Object{..} =
+  case objectInfo of
+    ObjectInfoUnit u -> unitType u == UnitTypeVillager
+    _ -> False
+
+-- @teams
+isObjectEnemy :: Maybe PlayerId -> Object -> Bool
+isObjectEnemy Nothing _ = False
+isObjectEnemy (Just p) Object{..} =
+  case objectPlayer of
+    Nothing -> False
+    Just op ->
+      if isGaia op
+        then False
+        else op /= p
+
+isObjectResource :: Object -> Bool
+isObjectResource Object{..} =
+  case objectInfo of
+    ObjectInfoMapObject u -> isResource $ mapObjectType u
+    ObjectInfoUnit u ->
+      case toObjectType u of
+        Nothing -> False
+        Just n -> and $ map isResource $ NE.toList n
+    _ -> False
+
+isObjectPrimaryActableByPlayerMilitary :: Maybe PlayerId -> Object -> Bool
+isObjectPrimaryActableByPlayerMilitary mp Object{..} =
+  case objectInfo of
+    ObjectInfoMapObject u -> canMilitaryPrimaryAct $ mapObjectType u
+    ObjectInfoBuilding _ ->
+      case mp of
+        Nothing -> True
+        Just p ->
+          if (objectPlayer == Just p)
+            then False
+            else True
+    _ -> True -- monks can target own units
 
 objectTypeFromUnitType :: UnitType -> Maybe (NonEmpty ObjectType)
 objectTypeFromUnitType (UnitTypeMilitary m) = objectTypeFromMilitaryType m
@@ -157,9 +226,21 @@ data EventMove = EventMove {
 } deriving (Show, Eq, Ord)
 
 data EventAttack = EventAttack {
-  eventAttackAttackers :: [UnitId],
+  eventAttackAttackers :: [ObjectId],
   eventAttackTargetId :: ObjectId,
   eventAttackPos :: Pos
+} deriving (Show, Eq, Ord)
+
+data EventGather = EventGather {
+  eventGatherGatherers :: [UnitId],
+  eventGatherTargetId :: ObjectId,
+  eventGatherPos :: Pos
+} deriving (Show, Eq, Ord)
+
+data EventGatherRelic = EventGatherRelic {
+  eventGatherRelicGatherers :: [UnitId],
+  eventGatherRelicTargetId :: ObjectId,
+  eventGatherRelicPos :: Pos
 } deriving (Show, Eq, Ord)
 
 data EventPrimary = EventPrimary {
@@ -167,6 +248,12 @@ data EventPrimary = EventPrimary {
   eventPrimaryTarget :: ObjectId,
   eventPrimaryPos :: Pos
 }  deriving (Show, Eq, Ord)
+
+{-data EventHelpBuildOrRepair = EventHelpBuildOrRepair {
+  eventPrimaryObjects :: [ObjectId], -- can be a building!
+  eventPrimaryTarget :: ObjectId,
+  eventPrimaryPos :: Pos
+}  deriving (Show, Eq, Ord)-}
 
 data EventBuild = EventBuild {
   eventBuildBuilders :: [UnitId],
@@ -231,6 +318,8 @@ data EventRally = EventRally {
 data EventType =
     EventTypeMove EventMove
   | EventTypeAttack EventAttack
+  | EventTypeGather EventGather
+  | EventTypeGatherRelic EventGatherRelic
   | EventTypePrimary EventPrimary
   | EventTypeMilitaryDisposition EventMilitaryDisposition
   | EventTypeTargetedMilitaryOrder EventTargetedMilitaryOrder
@@ -253,18 +342,10 @@ data Building = Building {
 } deriving (Show, Eq, Ord)
 
 
-
-
-data Resource = Resource {
-  resourceKind :: ResourceKind,
-  resourceType :: ObjectType,
-  resourcePos :: Pos
-} deriving (Show, Eq, Ord)
-
 data ObjectInfo =
     ObjectInfoUnit Unit
   | ObjectInfoBuilding Building
-  | ObjectInfoResource Resource
+  | ObjectInfoMapObject MapObject
   | ObjectInfoUnknown (Maybe ObjectType)
   deriving (Show, Eq, Ord)
 
@@ -272,7 +353,7 @@ data ObjectInfo =
 data ObjectTypeW =
     ObjectTypeWUnit
   | ObjectTypeWBuilding
-  | ObjectTypeWResource
+  | ObjectTypeWMapObject
   | ObjectTypeWUnknown
   deriving (Show, Eq, Ord)
 
@@ -281,7 +362,7 @@ objectTypeW o =
   case objectInfo o of
     ObjectInfoUnit _ -> ObjectTypeWUnit
     ObjectInfoBuilding _ -> ObjectTypeWBuilding
-    ObjectInfoResource _ -> ObjectTypeWResource
+    ObjectInfoMapObject _ -> ObjectTypeWMapObject
     ObjectInfoUnknown _ -> ObjectTypeWUnknown
 
 buildingTypeIdx :: Object -> Maybe BuildingType
@@ -331,25 +412,20 @@ instance HasObjectType Object where
     case objectInfo o of
       ObjectInfoUnit u -> toObjectType u
       ObjectInfoBuilding u -> toObjectType u
-      ObjectInfoResource u -> toObjectType u
+      ObjectInfoMapObject u -> toObjectType u
       ObjectInfoUnknown u -> mNonEmpty u
   setObjectType o t =
     let ni =
           case objectInfo o of
             ObjectInfoUnit u -> ObjectInfoUnit $ setObjectType u t
             ObjectInfoBuilding u -> ObjectInfoBuilding $ setObjectType u t
-            ObjectInfoResource u -> ObjectInfoResource $ setObjectType u t
+            ObjectInfoMapObject u -> ObjectInfoMapObject $ setObjectType u t
             ObjectInfoUnknown _ -> ObjectInfoUnknown $ Just t
     in o{objectInfo = ni}
 
 instance HasObjectType Unit where
   toObjectType u = objectTypeFromUnitType (unitType u)
   setObjectType u t = u{unitType = objectTypeToUnitType t}
-
-instance HasObjectType Resource where
-  toObjectType u = NE.nonEmpty [resourceType u]
-  setObjectType _ _ = error "All resources should have a type from the beginning"
-
 
 instance HasObjectType Building where
   toObjectType u = objectTypeFromBuildingType (buildingType u)
@@ -358,13 +434,20 @@ instance HasObjectType Building where
 
 data MapObject = MapObject {
   mapObjectType :: ObjectType,
-  mapObjectOwner :: PlayerId
+  mapObjectOwner :: PlayerId,
+  mapObjectOriginal :: ObjectRaw
 } deriving (Show, Eq, Ord)
+
+instance HasObjectType MapObject where
+  toObjectType u = NE.nonEmpty [mapObjectType u]
+  setObjectType _ _ = error "All map objects should exist from the beginning"
+
+
 
 data MapTile = MapTile {
   mapTileX :: Int,
   mapTileY :: Int,
-  mapTileResource :: [MapObject]
+  mapTileObjects :: [MapObject]
 } deriving (Show, Eq, Ord)
 
 
@@ -372,6 +455,8 @@ data MapTile = MapTile {
 data EventTypeW =
     EventTypeWMove
   | EventTypeWAttack
+  | EventTypeWGather
+  | EventTypeWGatherRelic
   | EventTypeWPrimary
   | EventTypeWMilitaryDisposition
   | EventTypeWTargetedMilitaryOrder
@@ -389,6 +474,8 @@ eventTypeW e =
   case eventType e of
     EventTypeMove _ -> EventTypeWMove
     EventTypeAttack _ -> EventTypeWAttack
+    EventTypeGather _ -> EventTypeWGather
+    EventTypeGatherRelic _ -> EventTypeWGatherRelic
     EventTypePrimary _ -> EventTypeWPrimary
     EventTypeMilitaryDisposition _ -> EventTypeWMilitaryDisposition
     EventTypeTargetedMilitaryOrder _ -> EventTypeWTargetedMilitaryOrder
@@ -405,6 +492,8 @@ eventActingObjectsIdx e =
   case eventType e of
     EventTypeMove EventMove{..} -> map toObjectId eventMoveUnits
     EventTypeAttack EventAttack{..} -> map toObjectId eventAttackAttackers
+    EventTypeGather EventGather{..} -> map toObjectId eventGatherGatherers
+    EventTypeGatherRelic EventGatherRelic{..} -> map toObjectId eventGatherRelicGatherers
     EventTypePrimary EventPrimary{..} -> map toObjectId eventPrimaryObjects
     EventTypeMilitaryDisposition EventMilitaryDisposition{..} -> map toObjectId eventMilitaryDispositionUnits
     EventTypeTargetedMilitaryOrder EventTargetedMilitaryOrder{..} -> map toObjectId eventTargetedMilitaryOrderUnits
@@ -417,10 +506,17 @@ eventActingObjectsIdx e =
     EventTypeRally EventRally{..} -> map toObjectId eventRallyBuildings
 
 
+newtype MapTileIndex = MapTileIndex (Int, Int) deriving (Eq, Ord, Show)
+
+mapTileCombinedIdx :: MapTile -> MapTileIndex
+mapTileCombinedIdx MapTile{..} = MapTileIndex (mapTileX, mapTileY)
+
+posToCombinedIdx :: Pos -> MapTileIndex
+posToCombinedIdx Pos{..} = MapTileIndex (floor posX, floor posY)
 
 makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'unitTypeIdx, 'buildingTypeIdx]
 makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible]
-makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY]
+makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
 ixsetGetIn :: (Indexable ixs a, IsIndexOf ix ixs) => [ix] -> IxSet ixs a  -> IxSet ixs a
 ixsetGetIn = flip (IxSet.@+)
@@ -434,7 +530,8 @@ getEventSet = fmap (events . gameState) get
 data GameState = GameState {
   objects :: ObjectSet,
   events :: EventSet,
-  mapTiles :: MapTileSet
+  mapTiles :: MapTileSet,
+  playerInfos :: HM.HashMap PlayerId PlayerInfo
 } deriving Show
 
 simulate :: HasLogFunc env => RecInfo -> RIO env GameState
@@ -442,7 +539,7 @@ simulate RecInfo{..} = do
   logInfo "Start simulating"
   logInfo "Placing map objects"
   let initialMap = IxSet.fromList $ map (\t -> MapTile (tilePositionX t) (tilePositionY t) []) (headerTiles recInfoHeader)
-  let initialGS = GameState IxSet.empty IxSet.empty initialMap
+  let initialGS = GameState IxSet.empty IxSet.empty initialMap (HM.fromList $ map (\i -> (PlayerId $ playerInfoNumber i, i)) (headerPlayers recInfoHeader))
 
   let sWithMap = gameState $ execState (placeMapObjects recInfoHeader) (SimState 0 initialGS HM.empty)
 
@@ -473,18 +570,79 @@ simulate RecInfo{..} = do
 placeMapObjects :: Header -> Sim ()
 placeMapObjects h = do
   void $ (flip mapM) (headerPlayers h) $ \PlayerInfo{..} -> do
-    mapM (placePlayerObject playerInfoNumber) playerInfoObjects
+    mapM placePlayerObject $ dropExtraneousObjectParts playerInfoObjects
+    where
+      -- for now let's just rid of these as they are potentially confusing
+      dropExtraneousObjectParts :: [ObjectRaw] -> [ObjectRaw]
+      dropExtraneousObjectParts [] = []
+      dropExtraneousObjectParts [x] = [x]
+      dropExtraneousObjectParts ((!x@ObjectRaw{..}):(!xs)) = x : (dropExtraneousObjectParts $ drop (objectPartsNumber (normaliseObjectType objectRawUnitId) - 1) xs)
 
-placePlayerObject :: Int -> ObjectRaw -> Sim ()
-{-placePlayerObject _ ObjectRaw{..} =
-  case (objectRawPosX, objectRawPosY) of
-    (Just x, Just y) -> do
-      traceM $ (displayShowT $ normaliseObjectType objectRawUnitId) <> " at " <> displayShowT x <> ", " <> displayShowT y
-      let ot = normaliseObjectType objectRawUnitId
+objectPartsNumber :: ObjectType -> Int
+objectPartsNumber OT_TownCenter = 4
+objectPartsNumber _ = 1
+-- at the moment we aren't placing wolves etc but we should!
+placePlayerObject :: ObjectRaw -> Sim ()
+placePlayerObject oRaw@ObjectRaw{..} = do
+  let noType = normaliseObjectType objectRawUnitId
+  case objectRawType of
+    -- units
+    70 -> do
+      when (isResourceOrRelic noType) $ do
+        let mObject = MapObject noType (PlayerId objectRawOwner) oRaw
+        placeMapObject mObject objectRawPos
+      let o = Object {
+                  objectId = ObjectId objectRawObjectId
+                , objectPlayer =  Just . PlayerId $ objectRawOwner
+                , objectInfo = ObjectInfoUnit $ Unit {
+                            unitType = objectTypeToUnitType noType
+                          }
+                         }
+      void $ updateObject o
 
-    _ -> pure ()-}
+    80 -> do
+      let o = Object {
+                  objectId = ObjectId objectRawObjectId
+                , objectPlayer = Just . PlayerId $ objectRawOwner
+                , objectInfo = ObjectInfoBuilding $ Building {
+                            buildingType = BuildingTypeKnown noType,
+                            buildingPos = Just (objectRawPos)
+                          }
+                         }
+      void $ updateObject o
+    10 -> do
+      case HM.lookup noType objectTypeToResourceKindMap of
+        Just _ -> do
+          let mObject = MapObject noType (PlayerId objectRawOwner) oRaw
+          placeMapObject mObject objectRawPos
+          let o = Object {
+                      objectId = ObjectId objectRawObjectId
+                    , objectPlayer = Just . PlayerId $ objectRawOwner
+                    , objectInfo = ObjectInfoMapObject $ mObject
+                    }
+          void $ updateObject o
+        _ -> debugObjectRaw
+    _ -> debugObjectRaw
+    where
+      debugObjectRaw :: Sim ()
+      debugObjectRaw = pure ()
+      --debugObjectRaw = traceM $ displayShowT objectRawObjectId <> " " <> displayShowT objectRawOwner  <> " " <> (displayShowT $ normaliseObjectType objectRawUnitId) <> " at " <> displayShowT objectRawPos
 
-placePlayerObject _ _ = pure ()
+placeMapObject :: MapObject -> Pos -> Sim ()
+placeMapObject mo p = do
+  mTiles <- fmap (mapTiles . gameState) get
+  let mTile = IxSet.getOne $ IxSet.getEQ (posToCombinedIdx p) mTiles
+  case mTile of
+    Nothing -> error $ "Could not find map tile at " ++ show p ++ " for object " ++ show mo
+    Just t ->
+      case mapTileObjects t of
+        [] -> do
+          let newMap = IxSet.updateIx (mapTileCombinedIdx t) t{mapTileObjects = [mo]} mTiles
+          modify' $ \ss ->
+            let gs = gameState ss
+            in ss{gameState = gs{mapTiles = newMap}}
+        xs -> error $ "Overlap in map tile when trying to place " ++ show mo ++ " at " ++ show p ++ ": found " ++ show xs
+
 
 type Ticks = Int
 type LastUsedIds = HM.HashMap Int [Int]
@@ -506,6 +664,10 @@ makeSimpleInferences = do
 
   unplayerEvents <- fmap (IxSet.getEQ (Nothing :: Maybe PlayerId)) $ getEventSet
   void $ mapM inferPlayerForEvent $ IxSet.toList unplayerEvents
+
+  primaryEvents <- fmap (IxSet.getEQ EventTypeWPrimary) $ getEventSet
+  void $ mapM inferDetailForEvent $ IxSet.toList primaryEvents
+
 
   pure ()
   where
@@ -541,11 +703,85 @@ makeSimpleInferences = do
         [x] -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeKnown x) (buildingObjectPos o)}
         x:xs -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeOneOf $ x :| xs) (buildingObjectPos o)}
 
+    inferDetailForEvent :: Event -> Sim ()
+    inferDetailForEvent e@Event{..} = do
+      mEt <-
+        case eventType of
+          EventTypePrimary EventPrimary{..} -> do
+            target <- lookupObjectOrFail eventPrimaryTarget
+            actors <- mapM lookupObjectOrFail eventPrimaryObjects
+            tryWhileNothing $ map (\f -> f eventPlayerResponsible target actors eventPrimaryPos) [construeAsGather, construeAsAttack, construeAsRelicGather]
+          _ -> pure Nothing
+      case mEt of
+            Nothing -> pure ()
+            Just et -> void $ updateEvent (e{eventType = et})
 
+    construeAsGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
+    construeAsGather pId t actors p =
+      if and (map isObjectVillager actors) && isObjectResource t && (not $ isObjectEnemy pId t)
+        then do
+         pure . Just $ EventTypeGather EventGather{
+            eventGatherTargetId = objectId t
+          , eventGatherGatherers = map (unitId . asUnit) actors
+          , eventGatherPos = p
+          }
+        else
+          if and (map ((==) ObjectTypeWUnit . objectTypeW) actors) && isObjectResource t &&  (not $ isObjectEnemy pId t) && (not . isObjectPrimaryActableByPlayerMilitary pId $ t)
+            then do
+              actors' <- mapM (\o -> updateObject o{objectInfo = ObjectInfoUnit Unit{unitType = UnitTypeVillager}}) actors
+              pure . Just $ EventTypeGather EventGather{
+                    eventGatherTargetId = objectId t
+                  , eventGatherGatherers = map (unitId . asUnit) actors'
+                  , eventGatherPos = p
+                }
+            else pure Nothing
+    construeAsAttack :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
+    construeAsAttack pId t actors p =
+      if isObjectEnemy pId t
+        then do
+         void $ mapM convertObjectToAttackingBuildingType actors
+         pure . Just $ EventTypeAttack EventAttack{
+                eventAttackAttackers =  map objectId actors
+              , eventAttackTargetId = objectId t
+              , eventAttackPos = p
+              }
+        else pure Nothing
+    construeAsRelicGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
+    construeAsRelicGather _pId t actors p =
+      if doesObjectMatch t isRelic -- the only people who can primary relics are monks
+        then do
+         actors' <- mapM ((flip convertObjectToKnownUnit) OT_Monk) actors
+         pure . Just $ EventTypeGatherRelic EventGatherRelic{
+                eventGatherRelicGatherers =  map (unitId . asUnit) actors'
+              , eventGatherRelicTargetId = objectId t
+              , eventGatherRelicPos = p
+              }
+        else pure Nothing
+
+convertObjectToKnownUnit :: Object -> ObjectType -> Sim Object
+convertObjectToKnownUnit o@Object{..} ot = do
+  asU <- convertObj o ObjectTypeWUnit
+
+  updateObject $ setObjectType asU ot
+
+convertObjectToAttackingBuildingType :: Object -> Sim Object
+convertObjectToAttackingBuildingType o@Object{..} =
+  case objectInfo of
+    ObjectInfoBuilding b@Building{..} ->
+      updateObject $ o{objectInfo = ObjectInfoBuilding b{buildingType = assignAttackingBuildingType buildingType}}
+    _ -> pure o
+
+tryWhileNothing :: (Monad m) => [m (Maybe r)] -> m (Maybe r)
+tryWhileNothing [] = pure $ Nothing
+tryWhileNothing (x:xs) = do
+  r <- x
+  case r of
+    Nothing -> tryWhileNothing xs
+    jr -> pure jr
 
 buildBasicEvents :: Op -> Sim ()
 buildBasicEvents (OpTypeSync OpSync{..}) = modify' (\ss -> ss{ticks = ticks ss + opSyncTime})
-buildBasicEvents (OpTypeCommand cmd) =  addCommandAsEvent cmd
+buildBasicEvents (OpTypeCommand cmd) = addCommandAsEvent cmd
 buildBasicEvents _ = pure ()
 
 
@@ -703,7 +939,10 @@ getObjectAsType i ti = do
     Nothing -> updateObject $ setObjectType o t
     Just ots ->
       if t `elemNonEmpty` ots
-        then updateObject $ setObjectType o t
+        then
+          if NE.length ots == 1
+            then pure o
+            else updateObject $ setObjectType o t
         else error $ "Mismatch in object types"
 
 
@@ -712,6 +951,7 @@ getObject i = getObjectForPlayer i Nothing
 
 getObjectForPlayer :: Int -> Maybe Int -> Sim Object
 getObjectForPlayer i mpId = do
+  when (i < 1) $ error "GOT AN OBJECT ID < 1"
   mO <- lookupObject (ObjectId i)
   case mO of
     Just o ->
@@ -722,6 +962,7 @@ getObjectForPlayer i mpId = do
           case objectPlayer o of
             Nothing -> updateObject o{objectPlayer = Just pId}
             Just pId' | pId' == pId -> pure o
+                      | pId' == PlayerId 0 -> updateObject o{objectPlayer = Just pId} -- stealing from gaia
                       | otherwise -> error "PlayerId CHANGED - stolen sheep or conversion? "
 
     Nothing -> do
@@ -741,14 +982,11 @@ getObjectsForPlayer us i = mapM ((flip getObjectForPlayer) (Just i)) us
 
 getUnit :: Int -> Sim ObjectUnit
 getUnit i = do
-  when (i == 2444) $ error "THIS IS WHERE"
-
   o <- getObject i
   fmap asUnit $ convertObj o ObjectTypeWUnit
 
 getUnitForPlayer :: Int -> Int -> Sim ObjectUnit
 getUnitForPlayer i pId = do
-  when (i == 2444) $ error "THIS IS WHERE"
   o <- getObjectForPlayer i (Just pId)
   fmap asUnit $ convertObj o ObjectTypeWUnit
 
@@ -771,7 +1009,7 @@ convertObj o w =
       let oInfo = case w of
             ObjectTypeWUnit -> ObjectInfoUnit $ Unit UnitTypeUnknown
             ObjectTypeWBuilding -> ObjectInfoBuilding $ Building BuildingTypeUnknown Nothing
-            ObjectTypeWResource -> error "Can't use for the w resource"
+            ObjectTypeWMapObject -> error "Can't use for the w resource"
             ObjectTypeWUnknown -> objectInfo o
           newO = o{objectInfo = oInfo}
       updateObject newO
@@ -783,8 +1021,12 @@ lookupObject i = do
   ixset <- fmap (objects . gameState) $ get
   pure $ IxSet.getOne $ IxSet.getEQ (toObjectId i) ixset
 
-
-
+lookupObjectOrFail :: (ToObjectId a ) => a -> Sim (Object)
+lookupObjectOrFail i = do
+  mo <- lookupObject i
+  case mo of
+    Just o -> pure o
+    Nothing -> error $ "Could not find object with id " ++ (show $ toObjectId i)
 
 updateObject :: Object -> Sim Object
 updateObject o = do
@@ -823,10 +1065,21 @@ replay gs = do
   logInfo "Rendering to file"
 
   let r = evalState renderEvents (SimState 0 gs HM.empty)
-
-
   liftIO $ TL.writeFile "/code/voobly-scraper/simHistory" $  r
+  let r2 = evalState renderAllObjects (SimState 0 gs HM.empty)
+  liftIO $ TL.writeFile "/code/voobly-scraper/simObjects" $  r2
+
   logInfo "Render done"
+
+
+renderAllObjects :: Sim TL.Text
+renderAllObjects = do
+  ss <- get
+  t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \Object{..} -> do
+    oRen <- renderObject $ objectId
+    pure $ rPad 10 (objectIdToInt objectId) <> oRen
+  pure $ TL.intercalate "\n" $ map TL.toLazyText t
+
 
 
 
@@ -835,6 +1088,9 @@ renderEvents = do
   ss <- get
   t <- mapM renderEvent $ IxSet.toAscList (Proxy :: Proxy EventId) $ events (gameState ss)
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
+
+rPad ::  (F.Buildable.Buildable a) => Int -> a-> TL.Builder
+rPad i a = F.right i ' ' a
 
 renderEvent :: Event -> Sim  TL.Builder
 renderEvent Event{..} = do
@@ -850,6 +1106,19 @@ renderEvent Event{..} = do
           t <- renderObject eventPrimaryTarget
           u <- renderObjects eventPrimaryObjects
           pure $ "Primaried " <> t <> " with " <> u <> " at " <> renderPos eventPrimaryPos
+        (EventTypeGather (EventGather{..})) -> do
+          t <- renderObject eventGatherTargetId
+          u <- renderObjects eventGatherGatherers
+          pure $ "Gathered " <> t <> " with " <> u <> " at " <> renderPos eventGatherPos
+        (EventTypeGatherRelic (EventGatherRelic{..})) -> do
+          t <- renderObject eventGatherRelicTargetId
+          u <- renderObjects eventGatherRelicGatherers
+          pure $ "Gathered relic " <> t <> " with " <> u <> " at " <> renderPos eventGatherRelicPos
+
+        (EventTypeAttack (EventAttack{..})) -> do
+          t <- renderObject eventAttackTargetId
+          u <- renderObjects eventAttackAttackers
+          pure $ "Attacked " <> t <> " with " <> u <> " at " <> renderPos eventAttackPos
         (EventTypeMove (EventMove{..})) -> do
           u <- renderUnits eventMoveUnits
           pure $ "Moved " <> u <> " to " <> renderPos eventMovePos
@@ -874,13 +1143,13 @@ renderEvent Event{..} = do
           pure $ "Patrolled " <> u <> " to " <> (displayShowB . length $ eventPatrolWaypoints) <> " waypoints"
         (EventTypeBuild (EventBuild{..})) -> do
           u <- renderUnits eventBuildBuilders
-          pure $ "Placed " <> displayShowB eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
+          pure $ "Placed " <> renderBuildingType eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
         (EventTypeResearch (EventResearch{..})) -> do
           t <- renderObject eventResearchBuilding
           pure $ "Researched " <> displayShowB eventResearchTech <> " at " <> t
         (EventTypeTrain (EventTrain{..})) -> do
           t <- renderObject eventTrainBuilding
-          pure $ "Trained " <> displayShowB eventTrainNumber <> " " <> displayShowB eventTrainType  <> "s at " <> t
+          pure $ "Trained " <> displayShowB eventTrainNumber <> " " <> renderUnitType eventTrainType  <> "s at " <> t
         (EventTypeStopGeneral (EventStopGeneral{..})) -> do
           u <- renderObjects eventStopSelectedIds
           pure $ "Stopped " <> u
@@ -894,19 +1163,20 @@ renderEvent Event{..} = do
             Just t -> do
               tr <- renderObject t
               pure $ "Rallied " <> b <> " to " <> tr <> " at map position " <> renderPos eventRallyPos
-        _ ->  pure $ "Some event"
+
 
     simOrReal :: TL.Builder
     simOrReal =
       case eventKind of
         EventKindReal _ -> "R"
         EventKindSimulated -> "S"
-    rPad ::  (F.Buildable.Buildable a) => Int -> a-> TL.Builder
-    rPad i a = F.right i ' ' a
+
 
 renderPlayer :: Maybe PlayerId -> Sim TL.Builder
 renderPlayer Nothing = pure "Unknown"
-renderPlayer (Just (PlayerId i)) = pure $ "P" <> displayShowB i
+renderPlayer (Just pid) = do
+  p <- fmap (HM.lookup pid . playerInfos . gameState) get
+  pure $ maybe "NOTFOUND" (F.Buildable.build . playerInfoName) p
 
 renderPos :: Pos -> TL.Builder
 renderPos (Pos x y) = "(" <> displayShowB x <> ", " <> displayShowB y <> ")"
@@ -926,11 +1196,16 @@ renderObject oid = do
 
       t <- case objectInfo of
                 ObjectInfoUnit a -> renderUnit a
-                ObjectInfoBuilding a -> renderBuilding a
-                ObjectInfoResource a -> renderResource a
+                ObjectInfoBuilding a -> do
+                  b <- renderBuilding a
+                  pure $ b <> " (" <> displayShowB (objectIdToInt objectId) <> ")"
+                ObjectInfoMapObject a -> renderMapObject a
                 ObjectInfoUnknown t ->  pure $ maybe "Unknown object" (displayShowB) t
-      belong <- renderPlayer objectPlayer
-      pure $ "a " <> t <> " belonging to " <> belong
+      if fmap isGaia objectPlayer == Just True
+        then pure $ "a " <> t
+        else do
+          belong <- renderPlayer objectPlayer
+          pure $ "a " <> t <> " belonging to " <> belong
 
 renderObjectType :: (ToObjectId a) => a -> Sim TL.Builder
 renderObjectType oid = do
@@ -941,10 +1216,10 @@ renderObjectType oid = do
       t <- case objectInfo of
             ObjectInfoUnit a -> renderUnit a
             ObjectInfoBuilding a -> renderBuilding a
-            ObjectInfoResource a -> renderResource a
+            ObjectInfoMapObject a -> renderMapObject a
             ObjectInfoUnknown t -> pure $ maybe "Unknown" (displayShowB) t
       p <- renderPlayer objectPlayer
-      pure $ p <> " " <> t <> "(" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
+      pure $ p <> " " <> t -- <> "(" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
 
 renderUnits :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderUnits = renderObjects
@@ -958,14 +1233,40 @@ renderObjects is = do
   pure $ F.Buildable.build $ TL.intercalate ", " rs
 
 renderUnit :: Unit -> Sim TL.Builder
-renderUnit (Unit{..}) = pure $ displayShowB unitType
+renderUnit (Unit{..}) = pure $ renderUnitType unitType
 
 
 renderBuilding :: Building -> Sim TL.Builder
-renderBuilding (Building{..}) = pure $ displayShowB buildingType
+renderBuilding (Building{..}) = pure $ renderBuildingType buildingType
 
-renderResource :: Resource -> Sim TL.Builder
-renderResource (Resource{..}) = pure $ displayShowB resourceType
+
+renderBuildingType :: BuildingType -> TL.Builder
+renderBuildingType (BuildingTypeKnown ot) = renderRawObjectType ot
+renderBuildingType (BuildingTypeOneOf a) = renderObjectTypes $ NE.toList a
+renderBuildingType BuildingTypeUnknown = "UnknownBuilding"
+
+renderUnitType :: UnitType -> TL.Builder
+renderUnitType UnitTypeUnknown = "UnknownUnit"
+renderUnitType UnitTypeVillager = "Villager"
+renderUnitType (UnitTypeOther a) = renderRawObjectType a
+renderUnitType (UnitTypeMilitary m) = renderMilitaryType m
+
+renderMilitaryType :: MilitaryType -> TL.Builder
+renderMilitaryType MilitaryTypeUnknown = "UnknownMilitary"
+renderMilitaryType (MilitaryTypeKnown a) = renderRawObjectType a
+renderMilitaryType (MilitaryTypeOneOf a) = renderObjectTypes $ NE.toList a
+
+renderRawObjectType :: ObjectType -> TL.Builder
+renderRawObjectType = F.Buildable.build . objectTypeToText
+
+objectTypeToText :: ObjectType -> Text
+objectTypeToText ot =  T.drop 3 $ displayShowT ot
+
+renderObjectTypes :: [ObjectType] -> TL.Builder
+renderObjectTypes ots = F.Buildable.build $ T.intercalate "|" $ map objectTypeToText ots
+
+renderMapObject :: MapObject -> Sim TL.Builder
+renderMapObject (MapObject{..}) = pure $ renderRawObjectType mapObjectType
 
 displayShowB :: (Show a) => a -> TL.Builder
 displayShowB = F.Buildable.build . displayShowT
