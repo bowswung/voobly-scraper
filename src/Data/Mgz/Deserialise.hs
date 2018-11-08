@@ -93,6 +93,9 @@ data Command =
   | CommandTypeBuild CommandBuild
   | CommandTypeWall CommandWall
   | CommandTypeTrain CommandTrain
+  | CommandTypeWaypoint CommandWaypoint
+  | CommandTypeStop CommandStop
+  | CommandTypeRally CommandRally
   | CommandUnparsed Int ByteString
     deriving (Show, Eq, Ord)
 
@@ -110,19 +113,26 @@ commandType (CommandTypeResearch _) = "Research"
 commandType (CommandTypeBuild _) = "Build"
 commandType (CommandTypeWall _) = "Wall"
 commandType (CommandTypeTrain _) = "Train"
+commandType (CommandTypeWaypoint _) = "Waypoint"
+commandType (CommandTypeStop _) = "Stop"
+commandType (CommandTypeRally _) = "Rally"
 commandType (CommandUnparsed n _) = "Unparsed: " <> displayShowT n
+
+
+type EitherInheritOrIds = Either () [Int]
+
 
 data CommandPrimary = CommandPrimary {
   commandPrimaryPlayerId :: Int
 , commandPrimaryTargetId :: Int
 , commandPrimaryPos :: Pos
-, commandPrimaryUnitIds :: [Int]
+, commandPrimaryUnitIds :: EitherInheritOrIds
 } deriving (Show, Eq, Ord)
 
 data CommandMove = CommandMove {
   commandMovePlayerId :: Int
 , commandMovePos :: Pos
-, commandMoveUnitIds :: [Int]
+, commandMoveUnitIds :: EitherInheritOrIds
 } deriving (Show, Eq, Ord)
 
 data CommandStance = CommandStance {
@@ -176,6 +186,23 @@ data CommandTrain = CommandTrain {
   commandTrainBuildingId :: Int
 , commandTrainUnitType :: Int
 , commandTrainNumber :: Int
+} deriving (Show, Eq, Ord)
+
+data CommandWaypoint = CommandWaypoint {
+  commandWaypointPlayerId :: Int
+, commandWaypointSelectedIds ::  EitherInheritOrIds -- can be building ids?
+, commandWaypointPos :: PosSimple
+} deriving (Show, Eq, Ord)
+
+data CommandStop = CommandStop {
+  commandStopSelectedIds :: [Int]
+} deriving (Show, Eq, Ord)
+
+data CommandRally = CommandRally {
+  commandRallyTargetObject :: Maybe Int
+, commandRallyTargetType :: Maybe Int
+, commandRallyPos :: Pos
+, commandRallySelectedBuildingIds :: [Int]
 } deriving (Show, Eq, Ord)
 
 data Op =
@@ -265,14 +292,14 @@ parseCommand 0 = do
   selectCount <- parseInt8
   skipN 3
   commandPrimaryPos <- parsePos
-  commandPrimaryUnitIds <- parseSelectedUnits selectCount
+  commandPrimaryUnitIds <- parseSelectedUnitsInherit selectCount
   pure . CommandTypePrimary $ CommandPrimary{..}
 parseCommand 3 = do
   commandMovePlayerId <- parseInt8
   skipN 6
   selectCount <- parseInt32
   commandMovePos <- parsePos
-  commandMoveUnitIds <- parseSelectedUnits selectCount
+  commandMoveUnitIds <- parseSelectedUnitsInherit selectCount
   pure . CommandTypeMove $ CommandMove{..}
 parseCommand 18 = do
   selectCount <- parseInt8
@@ -348,11 +375,44 @@ parseCommand 119 = do
   commandTrainNumber <- parseInt16
   pure . CommandTypeTrain $ CommandTrain{..}
 
+-- waypoint
+parseCommand 16 = do
+  commandWaypointPlayerId <- parseInt8
+  selectCount <- parseInt8
+  commandWaypointPos <- PosSimple <$> parseInt8 <*> parseInt8
+  commandWaypointSelectedIds <- parseSelectedUnitsInherit selectCount
+  pure . CommandTypeWaypoint $ CommandWaypoint{..}
+-- stop
+parseCommand 1 = do
+  selectCount <- parseInt8
+  commandStopSelectedIds <- parseSelectedUnits selectCount
+  pure . CommandTypeStop $ CommandStop{..}
+
+-- rally
+parseCommand 120 = do
+  selectCount <- parseInt8
+  skipN 2
+  mto <- parseInt32
+  mtt <- parseInt32
+  let commandRallyTargetObject = if mto == 4294967295 then Nothing else Just mto
+      commandRallyTargetType = if mtt == 4294901760 then Nothing else Just mtt
+  commandRallyPos <- parsePos
+  commandRallySelectedBuildingIds <- parseSelectedUnits selectCount
+  pure . CommandTypeRally $ CommandRally{..}
+
 parseCommand n = CommandUnparsed n <$> AP.takeByteString
 
+parseSelectedUnitsInherit :: Int -> AP.Parser EitherInheritOrIds
+parseSelectedUnitsInherit 255 = pure $ Left ()
+parseSelectedUnitsInherit (-1) = pure $ Left ()
+parseSelectedUnitsInherit 0 = fail "No units to parse in parseSelectedUnitsInherit"
+parseSelectedUnitsInherit n | n < 0 = fail $ "Got a negative number in parseSelectedUnitsInherit" ++ show n
+                            | otherwise = fmap Right $ replicateM n parseInt32
+
 parseSelectedUnits :: Int -> AP.Parser [Int]
-parseSelectedUnits 255 = pure []
-parseSelectedUnits n = replicateM n parseInt32
+parseSelectedUnits 0 = fail "No units to parse"
+parseSelectedUnits n | n < 0 = fail "Got a negative number in parseSelectedUnits"
+                     | otherwise =  replicateM n parseInt32
 
 parsePos :: AP.Parser Pos
 parsePos = do
