@@ -252,12 +252,7 @@ data Building = Building {
   buildingPos :: Maybe Pos
 } deriving (Show, Eq, Ord)
 
-data ResourceKind =
-    ResourceKindFood
-  | ResourceKindWood
-  | ResourceKindGold
-  | ResourceKindStone
-  deriving (Show, Eq, Ord)
+
 
 
 data Resource = Resource {
@@ -360,10 +355,16 @@ instance HasObjectType Building where
   toObjectType u = objectTypeFromBuildingType (buildingType u)
   setObjectType u t = u{buildingType = BuildingTypeKnown t}
 
+
+data MapObject = MapObject {
+  mapObjectType :: ObjectType,
+  mapObjectOwner :: PlayerId
+} deriving (Show, Eq, Ord)
+
 data MapTile = MapTile {
   mapTileX :: Int,
   mapTileY :: Int,
-  mapTileResource :: [Resource]
+  mapTileResource :: [MapObject]
 } deriving (Show, Eq, Ord)
 
 
@@ -469,30 +470,22 @@ simulate RecInfo{..} = do
   pure $ sWithSimpleInferences
 
 
-
-placeMapObjects :: Header -> Sim ()
-placeMapObjects _ = pure ()
-{-
 placeMapObjects :: Header -> Sim ()
 placeMapObjects h = do
   void $ (flip mapM) (headerPlayers h) $ \PlayerInfo{..} -> do
     mapM (placePlayerObject playerInfoNumber) playerInfoObjects
 
-
 placePlayerObject :: Int -> ObjectRaw -> Sim ()
-placePlayerObject 0 ObjectRaw{..} =
+{-placePlayerObject _ ObjectRaw{..} =
   case (objectRawPosX, objectRawPosY) of
     (Just x, Just y) -> do
       traceM $ (displayShowT $ normaliseObjectType objectRawUnitId) <> " at " <> displayShowT x <> ", " <> displayShowT y
       let ot = normaliseObjectType objectRawUnitId
-      case resourceKind $ objectRawType of
-        Nothing -> pure ()
-        Just rk -> error ""
 
-    _ -> pure ()
+    _ -> pure ()-}
 
 placePlayerObject _ _ = pure ()
--}
+
 type Ticks = Int
 type LastUsedIds = HM.HashMap Int [Int]
 data SimState = SimState {

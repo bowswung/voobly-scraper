@@ -4,7 +4,10 @@ module Data.Mgz.Constants (
   buildingToTechMap,
   techToBuildingMap,
   buildingToTrainUnitMap,
-  trainUnitToBuildingMap
+  trainUnitToBuildingMap,
+  ResourceKind(..),
+  resourceKindToObjectTypeMap,
+  objectTypeToResourceKindMap
 )
   where
 import Data.Mgz.Constants.Techs
@@ -39,3 +42,23 @@ buildingToTrainUnitMap = HM.fromList [
 
 trainUnitToBuildingMap ::  HM.HashMap ObjectType [ObjectType]
 trainUnitToBuildingMap = flipListHM buildingToTrainUnitMap
+
+data ResourceKind =
+    ResourceKindFood
+  | ResourceKindWood
+  | ResourceKindGold
+  | ResourceKindStone
+  deriving (Show, Eq, Ord, Generic)
+instance Hashable ResourceKind
+
+resourceKindToObjectTypeMap :: HM.HashMap ResourceKind [ObjectType]
+resourceKindToObjectTypeMap = HM.fromList [
+    (ResourceKindWood, [OT_OakForestTree])
+  , (ResourceKindFood, [OT_Sheep])
+  ]
+
+objectTypeToResourceKindMap :: HM.HashMap ObjectType ResourceKind
+objectTypeToResourceKindMap =
+    let ls = HM.toList resourceKindToObjectTypeMap
+        allPairs = concat $ map (\(ut, ts) -> map (\t -> (t, ut)) ts) ls
+  in HM.fromList allPairs

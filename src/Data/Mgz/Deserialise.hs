@@ -504,6 +504,7 @@ parseObject = do
   objUnitId <-  parseInt16
   let obj = ObjectRaw objType objOwner objUnitId
   case objType of
+    -- resources and similar?
     10 -> do
       skipN 19
       posX <-  parseFloat 4
@@ -516,13 +517,15 @@ parseObject = do
       skipN 14
       pure $ obj (Just posX) (Just posY) (Just $ ObjectRawExtraRes resType resAmount)
 
-    30 -> skipN 200 >> (pure  $ (obj Nothing Nothing Nothing))
+    30 -> showNextNBytes 200 >> skipN 200 >> (pure  $ (obj Nothing Nothing Nothing))
+    -- units
     70 -> do
       skipN 19
       posX <- parseFloat 4
       posY <-  parseFloat 4
       skipToBreak specificObjectBreak
       pure  $ obj (Just posX) (Just posY) Nothing
+    -- buildings
     80 -> do
       skipN 19
       posX <- parseFloat 4
