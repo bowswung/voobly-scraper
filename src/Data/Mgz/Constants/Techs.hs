@@ -254,8 +254,8 @@ data Tech =
   | Tech_SetMaximumPopulationNoHouses
   | Tech_DisableVietnameseVision
   | Tech_Unknown Int
-  deriving (Show, Eq, Ord)
-
+  deriving (Show, Eq, Ord, Generic)
+instance Hashable Tech
 
 normalizeTech :: Int -> Tech
 normalizeTech 2 = Tech_EliteTarkan

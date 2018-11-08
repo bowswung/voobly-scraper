@@ -8,9 +8,9 @@ import Voobly.TH
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
-import qualified Data.List.NonEmpty as NE
 import Data.List.NonEmpty(NonEmpty(..))
 import qualified Data.IxSet.Typed as IxSet
+import  Data.IxSet.Typed (IxSet, Indexable, IsIndexOf)
 import Control.Monad.State.Strict
 import Data.Proxy(Proxy(..))
 import qualified Data.Text.Format as F
@@ -18,6 +18,10 @@ import qualified Data.Text.Buildable as F.Buildable
 import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy as TL
+import qualified RIO.HashMap as HM
+
+
+
 newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord) -- object id from rec file - we don't know anything about it!
 
 newtype ObjectUnit = ObjectUnit Object -- just for the types
@@ -80,6 +84,16 @@ data MilitaryType =
   | MilitaryTypeOneOf (NonEmpty ObjectType)
   deriving (Show, Eq, Ord)
 
+objectTypeFromUnitType :: UnitType -> Maybe ObjectType
+objectTypeFromUnitType (UnitTypeMilitary m) = objectTypeFromMilitaryType m
+objectTypeFromUnitType (UnitTypeOther o) = pure o
+objectTypeFromUnitType UnitTypeVillager = pure OT_Villager
+objectTypeFromUnitType UnitTypeUnknown = Nothing
+
+objectTypeFromMilitaryType :: MilitaryType -> Maybe ObjectType
+objectTypeFromMilitaryType MilitaryTypeUnknown = Nothing
+objectTypeFromMilitaryType (MilitaryTypeKnown o) = pure o
+objectTypeFromMilitaryType (MilitaryTypeOneOf _) = Nothing
 
 data BuildingType =
     BuildingTypeUnknown
@@ -209,12 +223,18 @@ data Building = Building {
   buildingPos :: Maybe Pos
 } deriving (Show, Eq, Ord)
 
-data ResourceType = ResourceTypeUnknown
+data ResourceKind =
+    ResourceKindFood
+  | ResourceKindWood
+  | ResourceKindGold
+  | ResourceKindStone
   deriving (Show, Eq, Ord)
 
+
 data Resource = Resource {
-  resourceType :: ResourceType,
-  resourcePos :: Maybe Pos
+  resourceKind :: ResourceKind,
+  resourceType :: ObjectType,
+  resourcePos :: Pos
 } deriving (Show, Eq, Ord)
 
 data ObjectInfo =
@@ -240,31 +260,124 @@ objectTypeW o =
     ObjectInfoResource _ -> ObjectTypeWResource
     ObjectInfoUnknown -> ObjectTypeWUnknown
 
+buildingTypeIdx :: Object -> Maybe BuildingType
+buildingTypeIdx Object{..} =
+  case objectInfo of
+    ObjectInfoBuilding u -> pure $ buildingType u
+    _ -> Nothing
+
+unitTypeIdx :: Object -> Maybe UnitType
+unitTypeIdx Object{..} =
+  case objectInfo of
+    ObjectInfoUnit u -> pure $ unitType u
+    _ -> Nothing
+
+eventTechType :: Event -> Maybe Tech
+eventTechType Event{..} =
+  case eventType of
+    EventTypeResearch e -> pure $ eventResearchTech e
+    _ -> Nothing
+
+eventTrainObjectType :: Event -> Maybe ObjectType
+eventTrainObjectType Event{..} =
+  case eventType of
+    EventTypeTrain e -> objectTypeFromUnitType $ eventTrainType e
+    _ -> Nothing
+
+buildingObjectPos :: Object -> Maybe Pos
+buildingObjectPos Object{..} =
+  case objectInfo of
+    ObjectInfoBuilding b -> buildingPos b
+    _ -> Nothing
+
+
 data Object = Object {
   objectId :: ObjectId,
   objectPlayer :: Maybe PlayerId,
   objectInfo :: ObjectInfo
 } deriving (Show, Eq, Ord)
 
+data MapTile = MapTile {
+  mapTileX :: Int,
+  mapTileY :: Int,
+  mapTileResource :: [Resource]
+} deriving (Show, Eq, Ord)
+
+
+-- witness the type of an event
+data EventTypeW =
+    EventTypeWMove
+  | EventTypeWAttack
+  | EventTypeWPrimary
+  | EventTypeWMilitaryDisposition
+  | EventTypeWTargetedMilitaryOrder
+  | EventTypeWPatrol
+  | EventTypeWBuild
+  | EventTypeWTrain
+  | EventTypeWResearch
+  deriving (Show, Eq, Ord)
+
+eventTypeW :: Event -> EventTypeW
+eventTypeW e =
+  case eventType e of
+    EventTypeMove _ -> EventTypeWMove
+    EventTypeAttack _ -> EventTypeWAttack
+    EventTypePrimary _ -> EventTypeWPrimary
+    EventTypeMilitaryDisposition _ -> EventTypeWMilitaryDisposition
+    EventTypeTargetedMilitaryOrder _ -> EventTypeWTargetedMilitaryOrder
+    EventTypePatrol _ -> EventTypeWPatrol
+    EventTypeBuild _ -> EventTypeWBuild
+    EventTypeTrain _ -> EventTypeWTrain
+    EventTypeResearch _ -> EventTypeWResearch
+
+eventActingObjectsIdx :: Event -> [ObjectId]
+eventActingObjectsIdx e =
+  case eventType e of
+    EventTypeMove EventMove{..} -> map toObjectId eventMoveUnits
+    EventTypeAttack EventAttack{..} -> map toObjectId eventAttackAttackers
+    EventTypePrimary EventPrimary{..} -> map toObjectId eventPrimaryObjects
+    EventTypeMilitaryDisposition EventMilitaryDisposition{..} -> map toObjectId eventMilitaryDispositionUnits
+    EventTypeTargetedMilitaryOrder EventTargetedMilitaryOrder{..} -> map toObjectId eventTargetedMilitaryOrderUnits
+    EventTypePatrol EventPatrol{..} -> map toObjectId eventPatrolUnits
+    EventTypeBuild EventBuild{..} -> map toObjectId eventBuildBuilders
+    EventTypeTrain EventTrain{..} ->  pure $ toObjectId eventTrainBuilding
+    EventTypeResearch EventResearch{..} -> pure $ toObjectId eventResearchBuilding
 
 
 
-makeSimpleIxSet "ObjectSet" ''Object ['objectId]
-makeSimpleIxSet "EventSet" ''Event ['eventId]
+makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'unitTypeIdx, 'buildingTypeIdx]
+makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible]
+makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY]
 
+ixsetGetIn :: (Indexable ixs a, IsIndexOf ix ixs) => [ix] -> IxSet ixs a  -> IxSet ixs a
+ixsetGetIn = flip (IxSet.@+)
+
+getObjectSet :: Sim ObjectSet
+getObjectSet = fmap (objects . gameState) get
+
+getEventSet :: Sim EventSet
+getEventSet = fmap (events . gameState) get
 
 data GameState = GameState {
   objects :: ObjectSet,
-  events :: EventSet
+  events :: EventSet,
+  mapTiles :: MapTileSet
 } deriving Show
 
 simulate :: HasLogFunc env => RecInfo -> RIO env GameState
 simulate RecInfo{..} = do
   logInfo "Start simulating"
-  logInfo "Building base events"
-  let initialGS = GameState IxSet.empty IxSet.empty
+  logInfo "Placing map objects"
+  let initialMap = IxSet.fromList $ map (\t -> MapTile (tilePositionX t) (tilePositionY t) []) (headerTiles recInfoHeader)
+  let initialGS = GameState IxSet.empty IxSet.empty initialMap
 
-  let sBasic = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 initialGS [])
+  let sWithMap = gameState $ execState (placeMapObjects recInfoHeader) (SimState 0 initialGS [])
+
+  logInfo "Building base events"
+
+
+
+  let sBasic = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 sWithMap [])
   logInfo $ "Total events: " <> displayShow (IxSet.size . events $ sBasic)
 
   logInfo "Making simple inferences"
@@ -272,11 +385,29 @@ simulate RecInfo{..} = do
 
 
 
+
   pure $ sWithSimpleInferences
 
 
+placeMapObjects :: Header -> Sim ()
+placeMapObjects h = do
+  void $ (flip mapM) (headerPlayers h) $ \PlayerInfo{..} -> do
+    mapM (placePlayerObject playerInfoNumber) playerInfoObjects
 
 
+placePlayerObject :: Int -> ObjectRaw -> Sim ()
+placePlayerObject 0 ObjectRaw{..} =
+  case (objectRawPosX, objectRawPosY) of
+    (Just x, Just y) -> do
+      traceM $ (displayShowT $ normaliseObjectType objectRawUnitId) <> " at " <> displayShowT x <> ", " <> displayShowT y
+      let ot = normaliseObjectType objectRawUnitId
+      case resourceKind $ objectRawType of
+        Nothing -> pure ()
+        Just rk -> do
+
+    _ -> pure ()
+
+placePlayerObject _ _ = pure ()
 
 type Ticks = Int
 type LastUsedIds = [Int]
@@ -290,7 +421,49 @@ type Sim a = State SimState a
 
 makeSimpleInferences :: Sim ()
 makeSimpleInferences = do
+  unknownUnits <- fmap (IxSet.getEQ (Just UnitTypeUnknown)) $ getObjectSet
+  void $ mapM inferUnitType $ IxSet.toList unknownUnits
+
+  unknownBuildings <- fmap (IxSet.getEQ (Just BuildingTypeUnknown)) $ getObjectSet
+  void $ mapM inferBuildingType $ IxSet.toList unknownBuildings
+
+  unplayerEvents <- fmap (IxSet.getEQ (Nothing :: Maybe PlayerId)) $ getEventSet
+  void $ mapM inferPlayerForEvent $ IxSet.toList unplayerEvents
+
   pure ()
+  where
+    inferPlayerForEvent :: Event -> Sim ()
+    inferPlayerForEvent e = do
+      objs <- fmap catMaybes $  mapM lookupObject $ eventActingObjectsIdx e
+      let ps = L.nub . catMaybes $ map objectPlayer objs
+      case ps of
+        [] -> pure ()
+        [x] -> void $ updateEvent e{eventPlayerResponsible = Just x}
+        xs -> error $ "Multiple player owners for units in single event" ++ show xs
+
+    inferUnitType :: Object -> Sim ()
+    inferUnitType o = do
+      villagerEvents <- fmap (ixsetGetIn [EventTypeWBuild]  . IxSet.getEQ (objectId o)) $ getEventSet
+      if IxSet.size villagerEvents > 0
+        then void $ updateObject o{objectInfo = ObjectInfoUnit $ Unit UnitTypeVillager}
+        else do
+          militaryEvents <- fmap (ixsetGetIn [EventTypeWPatrol, EventTypeWMilitaryDisposition, EventTypeWTargetedMilitaryOrder]  . IxSet.getEQ (objectId o)) $ getEventSet
+          if IxSet.size militaryEvents > 0
+            then void $ updateObject o{objectInfo = ObjectInfoUnit $ Unit (UnitTypeMilitary MilitaryTypeUnknown)}
+            else pure ()
+
+    inferBuildingType :: Object -> Sim ()
+    inferBuildingType o = do
+      techEvents <-  fmap (IxSet.toList . ixsetGetIn [EventTypeWResearch]  . IxSet.getEQ (objectId o)) $ getEventSet
+      let utsFromTechs = L.nub . concat . catMaybes $ map ((flip HM.lookup) techToBuildingMap) $ L.nub . catMaybes $ map eventTechType techEvents
+      trainEvents <- fmap (IxSet.toList . ixsetGetIn [EventTypeWTrain]  . IxSet.getEQ (objectId o)) $ getEventSet
+      let utsFromTrainedUnits = L.nub . concat . catMaybes $ map ((flip HM.lookup) trainUnitToBuildingMap) $ L.nub . catMaybes $ map eventTrainObjectType trainEvents
+
+      case L.nub $ concat [utsFromTechs, utsFromTrainedUnits] of
+        [] -> pure ()
+        [x] -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeKnown x) (buildingObjectPos o)}
+        x:xs -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeOneOf $ x :| xs) (buildingObjectPos o)}
+
 
 
 buildBasicEvents :: Op -> Sim ()
@@ -486,6 +659,9 @@ lookupObject i = do
   ixset <- fmap (objects . gameState) $ get
   pure $ IxSet.getOne $ IxSet.getEQ (toObjectId i) ixset
 
+
+
+
 updateObject :: Object -> Sim Object
 updateObject o = do
   modify' $ \ss ->
@@ -494,6 +670,12 @@ updateObject o = do
   pure o
 
 
+updateEvent :: Event -> Sim Event
+updateEvent e = do
+  modify' $ \ss ->
+    let gs = gameState ss
+    in ss{gameState = gs{events = IxSet.updateIx (eventId e) e (events gs)}}
+  pure e
 
 addRealEvent :: Command -> Maybe Int -> EventType -> Sim ()
 addRealEvent c mP et = modify' $ \ss ->

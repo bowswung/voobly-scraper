@@ -602,7 +602,8 @@ data ObjectType =
  | OT_EliteKarambit
  | OT_Karambit
  | OT_Unknown Int
- deriving (Show, Eq, Ord)
+ deriving (Show, Eq, Ord, Generic)
+instance Hashable ObjectType
 
 
 normaliseObjectType :: Int -> ObjectType
