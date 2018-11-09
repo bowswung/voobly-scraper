@@ -95,6 +95,14 @@ getPos = do
   y <- G.getFloatle
   pure $ Pos x y
 
+getMaybePos :: Get (Maybe Pos)
+getMaybePos = do
+  x <- G.getFloatle
+  y <- G.getFloatle
+  if x < 0 && y < 0
+    then pure Nothing
+    else pure . Just $ Pos x y
+
 getMultiplePos :: Int -> Get [Pos]
 getMultiplePos n = do
   xs <- replicateM 10 $ G.getFloatle

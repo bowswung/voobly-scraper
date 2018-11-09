@@ -119,7 +119,51 @@ renderEvent e@Event{..} = do
         (EventTypeDelete (EventDelete{..})) -> do
           t <- renderObject eventDeleteObjectId
           pure $ "Deleted " <> t
+        (EventTypeResign (EventResign{..})) -> pure $ "Resigned "
+        (EventTypeAttackGround (EventAttackGround{..})) -> do
+          u <- renderUnits eventAttackGroundUnitIds
+          pure $ "Attacked the ground " <> " at " <> renderPos eventAttackGroundPos <> " with " <> u
+        (EventTypeTribute (EventTribute{..})) -> do
+          toPlayer <- renderPlayer $ Just eventTributeTo
+          pure $ "Tributed " <> toPlayer <> " " <> (displayShowB eventTributeAmount) <> " " <> displayShowB eventTributeResourceKind <> " with a transaction fee of " <> displayShowB eventTributeTransationFee
+        (EventTypeRepair (EventRepair{..})) -> do
+          u <- renderUnits eventRepairRepairers
+          o <- renderObject eventRepairRepaired
+          pure $ "Repaired " <> o <> " with " <> u
+        (EventTypeUngarrison (EventUngarrison{..})) -> do
+          o <- renderObjects eventUngarrisonReleasedFrom
+          pure $ "Ungarrisoned from " <> o
+        (EventTypeToggleGate (EventToggleGate{..})) -> do
+          o <- renderObject eventToggleGateGate
+          pure $ "Toggled " <> o
+        (EventTypeGarrison (EventGarrison{..})) -> do
+          t <- renderObject eventGarrisonTargetId
+          u <- renderUnits eventGarrisonGarrisonedUnits
+          pure $ "Garrisoned " <> u <> " in " <> t
+        (EventTypePackOrUnpack (EventPackOrUnpack{..})) -> do
+          let pack = if eventPackOrUnpackPacked then "Packed" else "Unpacked"
+          u <- renderUnits eventPackOrUnpackTrebuchets
+          pure $ pack <> " " <> u
+        (EventTypeUseMarket (EventUseMarket{..})) -> do
 
+          let bors = if eventUseMarketBuyOrSell == Buy then "Bought" else "Sold"
+          t <- renderObject eventUseMarketMarket
+          pure $ bors <> " " <> displayShowB (eventUseMarketAmount * 100) <> " " <> displayShowB eventUseMarketKind <> " at " <> t
+        (EventTypeDropRelic (EventDropRelic{..})) -> do
+          o <- renderObject eventDropRelicMonkId
+          pure $ "Dropped a relic with " <> o
+        (EventTypeTownBell (EventTownBell{..})) -> do
+          o <- renderObject eventTownBellTownCenter
+          let r = if eventTownBellActive then "Rang" else "Unrang"
+          pure $ r <> " the town bell at " <> o
+        (EventTypeBackToWork (EventBackToWork{..})) -> do
+          o <- renderObject eventBackToWorkBuildingId
+          pure $ "Sent the units inside " <> o <> " back to work"
+        (EventTypeWall (EventWall{..})) -> do
+          o <- renderUnits eventWallBuilders
+          pure $ "Walled with " <> renderRawObjectType eventWallBuildingType <> " from " <> renderPosSimple eventWallStartPos <> " to " <> renderPosSimple eventWallEndPos <> " with " <> o
+
+        --_ -> pure $ displayShowB eventType
     simOrReal :: TL.Builder
     simOrReal =
       case eventKind of

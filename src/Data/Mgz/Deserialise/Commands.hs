@@ -437,7 +437,7 @@ instance SimpleGet CommandRepair where
     pure CommandRepair{..}
 
 data CommandUngarrison = CommandUngarrison {
-  commandUngarrisonPos :: Pos,
+  commandUngarrisonPos :: Maybe Pos, -- if from building then doesn't exist
   commandUngarrisonType :: Int,
   commandUngarrisonObjectClicked :: Maybe ObjectId,
   commandUngarrisonReleasedFrom :: [ObjectId]
@@ -447,7 +447,7 @@ instance SimpleGet CommandUngarrison where
   simpleGet = do
     selectCount <- getInt8Int
     G.skip 2
-    commandUngarrisonPos <- getPos
+    commandUngarrisonPos <- getMaybePos
     commandUngarrisonType <- getInt8Int
     G.skip 3
     commandUngarrisonObjectClicked <- getMaybeObjectId
@@ -465,7 +465,7 @@ instance SimpleGet CommandToggleGate where
     pure CommandToggleGate{..}
 
 data CommandGarrison = CommandGarrison {
-  commandGarrisonBuilding:: Maybe ObjectId,
+  commandGarrisonTargetId:: Maybe ObjectId,
   commandGarrisonType :: GarrisonType,
   commandGarrisonPos :: Pos, -- this might be misleading, the pos doesn't seem to be used in the normal way
   commandGarrisonSelectedIds :: [ObjectId]
@@ -476,7 +476,7 @@ instance SimpleGet CommandGarrison where
   simpleGet = do
     selectCount <- getInt8Int
     G.skip 2
-    commandGarrisonBuilding <- getMaybeObjectId
+    commandGarrisonTargetId <- getMaybeObjectId
     commandGarrisonType <- getGarrisonType
     G.skip 3
     commandGarrisonPos <- getPos

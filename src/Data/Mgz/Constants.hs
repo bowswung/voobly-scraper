@@ -102,3 +102,20 @@ canMilitaryPrimaryAct _ = True
 objectPartsNumber :: ObjectType -> Int
 objectPartsNumber OT_TownCenter = 4
 objectPartsNumber _ = 1
+
+-- witness the type of an object
+data ObjectTypeW =
+    ObjectTypeWUnit
+  | ObjectTypeWBuilding
+  | ObjectTypeWMapObject
+  | ObjectTypeWUnknown
+  deriving (Show, Eq, Ord)
+
+objectTypeToObjectTypeW :: ObjectType -> ObjectTypeW
+objectTypeToObjectTypeW OT_Trebuchet = ObjectTypeWUnit
+objectTypeToObjectTypeW OT_TownCenter = ObjectTypeWBuilding
+objectTypeToObjectTypeW OT_Castle = ObjectTypeWBuilding
+objectTypeToObjectTypeW OT_ArcheryRange = ObjectTypeWBuilding
+objectTypeToObjectTypeW OT_SiegeWorkshop = ObjectTypeWBuilding
+objectTypeToObjectTypeW OT_WatchTower = ObjectTypeWBuilding
+objectTypeToObjectTypeW ot = error $ "objectTypeToObjectTypeW : Nothing defined for ot " ++ show ot

@@ -34,15 +34,9 @@ data Object = Object {
 } deriving (Show, Eq, Ord)
 
 newtype ObjectUnit = ObjectUnit Object -- just for the types
-newtype ObjectBuilding = ObjectBuilding Object -- just for the types
+newtype ObjectBuilding = ObjectBuilding{objectFromObjectBuilding :: Object} -- just for the types
 
--- witness the type of an object
-data ObjectTypeW =
-    ObjectTypeWUnit
-  | ObjectTypeWBuilding
-  | ObjectTypeWMapObject
-  | ObjectTypeWUnknown
-  deriving (Show, Eq, Ord)
+
 
 objectTypeW :: Object -> ObjectTypeW
 objectTypeW o =
@@ -52,10 +46,6 @@ objectTypeW o =
     ObjectInfoMapObject _ -> ObjectTypeWMapObject
     ObjectInfoUnknown _ -> ObjectTypeWUnknown
 
-
-objectTypeToObjectTypeW :: ObjectType -> ObjectTypeW
-objectTypeToObjectTypeW OT_Castle = ObjectTypeWBuilding
-objectTypeToObjectTypeW ot = error $ "objectTypeToObjectTypeW : Nothing defined for ot " ++ show ot
 
 data ObjectInfo =
     ObjectInfoUnit Unit
@@ -69,6 +59,10 @@ data Unit = Unit {
   unitType :: UnitType
 } deriving (Show, Eq, Ord)
 
+newUnit :: Unit
+newUnit = Unit {
+    unitType = UnitTypeUnknown
+  }
 data UnitType =
     UnitTypeUnknown
   | UnitTypeVillager
@@ -89,6 +83,12 @@ data Building = Building {
   buildingPlaceEvent :: Maybe EventId
 } deriving (Show, Eq, Ord)
 
+newBuilding :: Building
+newBuilding = Building {
+    buildingType = BuildingTypeUnknown
+  , buildingPos = Nothing
+  , buildingPlaceEvent = Nothing
+  }
 data BuildingType =
     BuildingTypeUnknown
   | BuildingTypeKnown ObjectType
@@ -141,7 +141,12 @@ instance HasObjectType Object where
             ObjectInfoUnit u -> ObjectInfoUnit $ setObjectType u t
             ObjectInfoBuilding u -> ObjectInfoBuilding $ setObjectType u t
             ObjectInfoMapObject u -> ObjectInfoMapObject $ setObjectType u t
-            ObjectInfoUnknown _ -> ObjectInfoUnknown $ Just t
+            ObjectInfoUnknown _ ->
+              case objectTypeToObjectTypeW t of
+                ObjectTypeWUnit -> ObjectInfoUnit newUnit{unitType = objectTypeToUnitType t}
+                ObjectTypeWBuilding -> ObjectInfoBuilding newBuilding{buildingType = BuildingTypeKnown t}
+                ObjectTypeWMapObject -> error "Should not be possible to set a map object type on a unknown object"
+                ObjectTypeWUnknown -> ObjectInfoUnknown $ Just t
     in o{objectInfo = ni}
 
 instance HasObjectType Unit where
@@ -190,13 +195,13 @@ asUnit :: Object -> ObjectUnit
 asUnit o =
   if objectTypeW o == ObjectTypeWUnit
     then ObjectUnit o
-    else error "Could not get object asUnit"
+    else error $ "Could not get object asUnit" ++ show o
 
 asBuilding :: Object -> ObjectBuilding
 asBuilding o =
   if objectTypeW o == ObjectTypeWBuilding
     then ObjectBuilding o
-    else error "Could not get object asBuilding"
+    else error $ "Could not get object asBuilding" ++ show o
 
 
 

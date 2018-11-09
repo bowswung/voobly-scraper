@@ -59,6 +59,8 @@ unitTypeIdx Object{..} =
     ObjectInfoUnit u -> pure $ unitType u
     _ -> Nothing
 
+eventActingObjectsIdx :: Event -> [ObjectId]
+eventActingObjectsIdx = eventActingObjects
 
 makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'unitTypeIdx, 'buildingTypeIdx, 'objectPlacedByGameIdx]
 makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx]

@@ -6,6 +6,9 @@ import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import  Data.IxSet.Typed (IxSet, Indexable, IsIndexOf)
 
+fmapMaybe :: (Applicative m) => (a -> m b) ->  Maybe a -> m (Maybe b)
+fmapMaybe _ Nothing  = pure Nothing
+fmapMaybe f (Just a) = fmap Just $ f a
 
 ixsetGetIn :: (Indexable ixs a, IsIndexOf ix ixs) => [ix] -> IxSet ixs a  -> IxSet ixs a
 ixsetGetIn = flip (IxSet.@+)

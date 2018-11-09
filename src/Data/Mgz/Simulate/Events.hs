@@ -1,3 +1,4 @@
+{-# LANGUAGE UndecidableInstances #-}
 module Data.Mgz.Simulate.Events where
 
 import RIO
@@ -153,6 +154,82 @@ data EventDelete = EventDelete {
   eventDeleteObjectId :: ObjectId
 }  deriving (Show, Eq, Ord)
 
+data EventResign = EventResign {
+  eventResignPlayerId :: PlayerId
+}  deriving (Show, Eq, Ord)
+
+data EventAttackGround = EventAttackGround {
+  eventAttackGroundUnitIds :: [UnitId]
+, eventAttackGroundPos :: Pos
+}  deriving (Show, Eq, Ord)
+
+data EventTribute = EventTribute {
+  eventTributeFrom :: PlayerId,
+  eventTributeTo :: PlayerId,
+  eventTributeResourceKind :: ResourceKind,
+  eventTributeAmount :: Float,
+  eventTributeTransationFee :: Float
+}  deriving (Show, Eq, Ord)
+
+data EventRepair = EventRepair {
+  eventRepairRepaired :: ObjectId,
+  eventRepairRepairers :: [UnitId]
+}  deriving (Show, Eq, Ord)
+
+data EventUngarrison = EventUngarrison {
+  eventUngarrisonPos :: Maybe Pos,
+  eventUngarrisonType :: Int,
+  eventUngarrisonObjectClicked :: Maybe UnitId,
+  eventUngarrisonReleasedFrom :: [ObjectId]
+}  deriving (Show, Eq, Ord)
+
+data EventToggleGate = EventToggleGate {
+  eventToggleGateGate :: BuildingId
+}  deriving (Show, Eq, Ord)
+
+data EventGarrison = EventGarrison {
+  eventGarrisonTargetId :: ObjectId,
+  eventGarrisonPos :: Pos,
+  eventGarrisonGarrisonedUnits :: [UnitId]
+}  deriving (Show, Eq, Ord)
+
+data EventPackOrUnpack = EventPackOrUnpack {
+  eventPackOrUnpackTrebuchets :: [UnitId],
+  eventPackOrUnpackPacked :: Bool
+}  deriving (Show, Eq, Ord)
+
+data BuyOrSell =
+    Buy
+  | Sell
+  deriving (Show, Eq, Ord)
+
+data EventUseMarket = EventUseMarket {
+  eventUseMarketBuyOrSell :: BuyOrSell,
+  eventUseMarketKind :: ResourceKind,
+  eventUseMarketAmount :: Int, -- in hundreds
+  eventUseMarketMarket :: BuildingId
+  }  deriving (Show, Eq, Ord)
+
+data EventDropRelic = EventDropRelic {
+  eventDropRelicMonkId :: UnitId
+}  deriving (Show, Eq, Ord)
+
+data EventTownBell = EventTownBell {
+  eventTownBellTownCenter :: BuildingId,
+  eventTownBellActive :: Bool
+}  deriving (Show, Eq, Ord)
+
+data EventBackToWork = EventBackToWork {
+  eventBackToWorkBuildingId :: BuildingId
+}  deriving (Show, Eq, Ord)
+
+data EventWall = EventWall {
+      eventWallStartPos :: PosSimple
+    , eventWallEndPos :: PosSimple
+    , eventWallBuildingType :: ObjectType
+    , eventWallBuilders :: [UnitId]
+  }  deriving (Show, Eq, Ord)
+
 data EventType =
     EventTypeMove EventMove
   | EventTypeAttack EventAttack
@@ -169,6 +246,19 @@ data EventType =
   | EventTypeWaypoint EventWaypoint
   | EventTypeRally EventRally
   | EventTypeDelete EventDelete
+  | EventTypeResign EventResign
+  | EventTypeAttackGround EventAttackGround
+  | EventTypeTribute EventTribute
+  | EventTypeRepair EventRepair
+  | EventTypeUngarrison EventUngarrison
+  | EventTypeToggleGate EventToggleGate
+  | EventTypeGarrison EventGarrison
+  | EventTypePackOrUnpack EventPackOrUnpack
+  | EventTypeUseMarket EventUseMarket
+  | EventTypeDropRelic EventDropRelic
+  | EventTypeTownBell EventTownBell
+  | EventTypeBackToWork EventBackToWork
+  | EventTypeWall EventWall
   deriving (Show, Eq, Ord)
 
 
@@ -191,10 +281,25 @@ instance ReferencesObjectIds EventType where
   referencesObjectIds (EventTypeWaypoint e) = referencesObjectIds e
   referencesObjectIds (EventTypeRally e) = referencesObjectIds e
   referencesObjectIds (EventTypeDelete e) = referencesObjectIds e
-
+  referencesObjectIds (EventTypeResign e) = referencesObjectIds e
+  referencesObjectIds (EventTypeAttackGround e) = referencesObjectIds e
+  referencesObjectIds (EventTypeTribute e) = referencesObjectIds e
+  referencesObjectIds (EventTypeRepair e) = referencesObjectIds e
+  referencesObjectIds (EventTypeUngarrison e) = referencesObjectIds e
+  referencesObjectIds (EventTypeToggleGate e) = referencesObjectIds e
+  referencesObjectIds (EventTypeGarrison e) = referencesObjectIds e
+  referencesObjectIds (EventTypePackOrUnpack e) = referencesObjectIds e
+  referencesObjectIds (EventTypeUseMarket e) = referencesObjectIds e
+  referencesObjectIds (EventTypeDropRelic e) = referencesObjectIds e
+  referencesObjectIds (EventTypeTownBell e) = referencesObjectIds e
+  referencesObjectIds (EventTypeBackToWork e) = referencesObjectIds e
+  referencesObjectIds (EventTypeWall e) = referencesObjectIds e
 
 class ReferencesObjectIds a where
   referencesObjectIds :: a -> [ObjectId]
+
+instance {-# OVERLAPPABLE #-}  (EventActingObjects a) => ReferencesObjectIds a where
+  referencesObjectIds = eventActingObjects
 
 instance ReferencesObjectIds EventMove where
    referencesObjectIds EventMove{..} = map toObjectId eventMoveUnits
@@ -242,6 +347,8 @@ instance ReferencesObjectIds EventDelete where
    referencesObjectIds EventDelete{..} = [eventDeleteObjectId]
 
 
+
+
 -- witness the type of an event
 data EventTypeW =
     EventTypeWMove
@@ -259,42 +366,169 @@ data EventTypeW =
   | EventTypeWWaypoint
   | EventTypeWRally
   | EventTypeWDelete
+  | EventTypeWResign
+  | EventTypeWAttackGround
+  | EventTypeWTribute
+  | EventTypeWRepair
+  | EventTypeWUngarrison
+  | EventTypeWToggleGate
+  | EventTypeWGarrison
+  | EventTypeWPackOrUnpack
+  | EventTypeWUseMarket
+  | EventTypeWDropRelic
+  | EventTypeWTownBell
+  | EventTypeWBackToWork
+  | EventTypeWWall
   deriving (Show, Eq, Ord)
 
 eventTypeW :: Event -> EventTypeW
 eventTypeW e =
   case eventType e of
-    EventTypeMove _ -> EventTypeWMove
-    EventTypeAttack _ -> EventTypeWAttack
-    EventTypeGather _ -> EventTypeWGather
-    EventTypeGatherRelic _ -> EventTypeWGatherRelic
-    EventTypePrimary _ -> EventTypeWPrimary
-    EventTypeMilitaryDisposition _ -> EventTypeWMilitaryDisposition
+    EventTypeMove                  _ -> EventTypeWMove
+    EventTypeAttack                _ -> EventTypeWAttack
+    EventTypeGather                _ -> EventTypeWGather
+    EventTypeGatherRelic           _ -> EventTypeWGatherRelic
+    EventTypePrimary               _ -> EventTypeWPrimary
+    EventTypeMilitaryDisposition   _ -> EventTypeWMilitaryDisposition
     EventTypeTargetedMilitaryOrder _ -> EventTypeWTargetedMilitaryOrder
-    EventTypePatrol _ -> EventTypeWPatrol
-    EventTypeBuild _ -> EventTypeWBuild
-    EventTypeTrain _ -> EventTypeWTrain
-    EventTypeResearch _ -> EventTypeWResearch
-    EventTypeStopGeneral _ -> EventTypeWStopGeneral
-    EventTypeWaypoint _ -> EventTypeWWaypoint
-    EventTypeRally _ -> EventTypeWRally
-    EventTypeDelete _ -> EventTypeWDelete
+    EventTypePatrol                _ -> EventTypeWPatrol
+    EventTypeBuild                 _ -> EventTypeWBuild
+    EventTypeTrain                 _ -> EventTypeWTrain
+    EventTypeResearch              _ -> EventTypeWResearch
+    EventTypeStopGeneral           _ -> EventTypeWStopGeneral
+    EventTypeWaypoint              _ -> EventTypeWWaypoint
+    EventTypeRally                 _ -> EventTypeWRally
+    EventTypeDelete                _ -> EventTypeWDelete
+    EventTypeResign                _ -> EventTypeWResign
+    EventTypeAttackGround          _ -> EventTypeWAttackGround
+    EventTypeTribute               _ -> EventTypeWTribute
+    EventTypeRepair                _ -> EventTypeWRepair
+    EventTypeUngarrison            _ -> EventTypeWUngarrison
+    EventTypeToggleGate            _ -> EventTypeWToggleGate
+    EventTypeGarrison              _ -> EventTypeWGarrison
+    EventTypePackOrUnpack          _ -> EventTypeWPackOrUnpack
+    EventTypeUseMarket             _ -> EventTypeWUseMarket
+    EventTypeDropRelic             _ -> EventTypeWDropRelic
+    EventTypeTownBell              _ -> EventTypeWTownBell
+    EventTypeBackToWork            _ -> EventTypeWBackToWork
+    EventTypeWall                  _ -> EventTypeWWall
 
-eventActingObjectsIdx :: Event -> [ObjectId]
-eventActingObjectsIdx e =
-  case eventType e of
-    EventTypeMove EventMove{..} -> map toObjectId eventMoveUnits
-    EventTypeAttack EventAttack{..} -> map toObjectId eventAttackAttackers
-    EventTypeGather EventGather{..} -> map toObjectId eventGatherGatherers
-    EventTypeGatherRelic EventGatherRelic{..} -> map toObjectId eventGatherRelicGatherers
-    EventTypePrimary EventPrimary{..} -> map toObjectId eventPrimaryObjects
-    EventTypeMilitaryDisposition EventMilitaryDisposition{..} -> map toObjectId eventMilitaryDispositionUnits
-    EventTypeTargetedMilitaryOrder EventTargetedMilitaryOrder{..} -> map toObjectId eventTargetedMilitaryOrderUnits
-    EventTypePatrol EventPatrol{..} -> map toObjectId eventPatrolUnits
-    EventTypeBuild EventBuild{..} -> map toObjectId eventBuildBuilders
-    EventTypeTrain EventTrain{..} ->  pure $ toObjectId eventTrainBuilding
-    EventTypeResearch EventResearch{..} -> pure $ toObjectId eventResearchBuilding
-    EventTypeStopGeneral EventStopGeneral{..} -> eventStopSelectedIds
-    EventTypeWaypoint EventWaypoint{..} -> eventWaypointSelectedObjects
-    EventTypeRally EventRally{..} -> map toObjectId eventRallyBuildings
-    EventTypeDelete EventDelete{..} -> []
+class EventActingObjects a where
+  eventActingObjects :: a -> [ObjectId]
+
+instance EventActingObjects Event where
+  eventActingObjects = eventActingObjects . eventType
+
+instance EventActingObjects EventType where
+  eventActingObjects (EventTypeMove e) = eventActingObjects e
+  eventActingObjects (EventTypeAttack e) = eventActingObjects e
+  eventActingObjects (EventTypeGather e) = eventActingObjects e
+  eventActingObjects (EventTypeGatherRelic e) = eventActingObjects e
+  eventActingObjects (EventTypePrimary e) = eventActingObjects e
+  eventActingObjects (EventTypeMilitaryDisposition e) = eventActingObjects e
+  eventActingObjects (EventTypeTargetedMilitaryOrder e) = eventActingObjects e
+  eventActingObjects (EventTypePatrol e) = eventActingObjects e
+  eventActingObjects (EventTypeBuild e) = eventActingObjects e
+  eventActingObjects (EventTypeTrain e) = eventActingObjects e
+  eventActingObjects (EventTypeResearch e) = eventActingObjects e
+  eventActingObjects (EventTypeStopGeneral e) = eventActingObjects e
+  eventActingObjects (EventTypeWaypoint e) = eventActingObjects e
+  eventActingObjects (EventTypeRally e) = eventActingObjects e
+  eventActingObjects (EventTypeDelete e) = eventActingObjects e
+  eventActingObjects (EventTypeResign e) = eventActingObjects e
+  eventActingObjects (EventTypeAttackGround e) = eventActingObjects e
+  eventActingObjects (EventTypeTribute e) = eventActingObjects e
+  eventActingObjects (EventTypeRepair e) = eventActingObjects e
+  eventActingObjects (EventTypeUngarrison e) = eventActingObjects e
+  eventActingObjects (EventTypeToggleGate e) = eventActingObjects e
+  eventActingObjects (EventTypeGarrison e) = eventActingObjects e
+  eventActingObjects (EventTypePackOrUnpack e) = eventActingObjects e
+  eventActingObjects (EventTypeUseMarket e) = eventActingObjects e
+  eventActingObjects (EventTypeDropRelic e) = eventActingObjects e
+  eventActingObjects (EventTypeTownBell e) = eventActingObjects e
+  eventActingObjects (EventTypeBackToWork e) = eventActingObjects e
+  eventActingObjects (EventTypeWall e) = eventActingObjects e
+
+instance EventActingObjects EventMove where
+  eventActingObjects EventMove{..} =  map toObjectId eventMoveUnits
+
+instance EventActingObjects EventAttack where
+  eventActingObjects EventAttack{..} = map toObjectId eventAttackAttackers
+
+instance EventActingObjects EventGather where
+  eventActingObjects EventGather{..} =  map toObjectId eventGatherGatherers
+
+instance EventActingObjects EventGatherRelic where
+  eventActingObjects EventGatherRelic{..} =  map toObjectId eventGatherRelicGatherers
+
+instance EventActingObjects EventPrimary where
+  eventActingObjects EventPrimary{..} =  map toObjectId eventPrimaryObjects
+
+instance EventActingObjects EventMilitaryDisposition where
+  eventActingObjects EventMilitaryDisposition{..} =  map toObjectId eventMilitaryDispositionUnits
+
+instance EventActingObjects EventTargetedMilitaryOrder where
+  eventActingObjects EventTargetedMilitaryOrder{..} =  map toObjectId eventTargetedMilitaryOrderUnits
+
+instance EventActingObjects EventPatrol where
+  eventActingObjects EventPatrol{..} =  map toObjectId eventPatrolUnits
+
+instance EventActingObjects EventBuild where
+  eventActingObjects EventBuild{..} =  map toObjectId eventBuildBuilders
+
+instance EventActingObjects EventTrain where
+  eventActingObjects EventTrain{..} = pure $ toObjectId eventTrainBuilding
+
+instance EventActingObjects EventResearch where
+  eventActingObjects EventResearch{..} = pure $ toObjectId eventResearchBuilding
+
+instance EventActingObjects EventStopGeneral where
+  eventActingObjects EventStopGeneral{..} = eventStopSelectedIds
+
+instance EventActingObjects EventWaypoint where
+  eventActingObjects EventWaypoint{..} = eventWaypointSelectedObjects
+
+instance EventActingObjects EventRally where
+  eventActingObjects EventRally{..} =  map toObjectId eventRallyBuildings
+
+instance EventActingObjects EventDelete where
+  eventActingObjects EventDelete{..} =  [eventDeleteObjectId]
+
+instance EventActingObjects EventResign where
+  eventActingObjects EventResign{..} = []
+
+instance EventActingObjects EventAttackGround where
+  eventActingObjects EventAttackGround{..} =  map toObjectId eventAttackGroundUnitIds
+
+instance EventActingObjects EventTribute where
+  eventActingObjects EventTribute{..} = []
+
+instance EventActingObjects EventRepair where
+  eventActingObjects EventRepair{..} = map toObjectId eventRepairRepairers
+
+instance EventActingObjects EventUngarrison where
+  eventActingObjects EventUngarrison{..} =  eventUngarrisonReleasedFrom ++ catMaybes [fmap toObjectId eventUngarrisonObjectClicked]
+
+instance EventActingObjects EventToggleGate where
+  eventActingObjects EventToggleGate{..} =  [toObjectId eventToggleGateGate]
+
+instance EventActingObjects EventGarrison where
+  eventActingObjects EventGarrison{..} = map toObjectId eventGarrisonGarrisonedUnits ++ [eventGarrisonTargetId] -- @team
+
+instance EventActingObjects EventPackOrUnpack where
+  eventActingObjects EventPackOrUnpack{..} =  map toObjectId eventPackOrUnpackTrebuchets
+
+instance EventActingObjects EventUseMarket where
+  eventActingObjects EventUseMarket{..} =  [toObjectId eventUseMarketMarket]
+
+instance EventActingObjects EventDropRelic where
+  eventActingObjects EventDropRelic{..} = [toObjectId eventDropRelicMonkId]
+
+instance EventActingObjects EventTownBell where
+  eventActingObjects EventTownBell{..} = [toObjectId eventTownBellTownCenter]
+
+instance EventActingObjects EventBackToWork where
+  eventActingObjects EventBackToWork{..} = [toObjectId eventBackToWorkBuildingId]
+
+instance EventActingObjects EventWall where
+  eventActingObjects EventWall{..} = map toObjectId eventWallBuilders

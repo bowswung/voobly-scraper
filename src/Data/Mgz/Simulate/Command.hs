@@ -1,6 +1,8 @@
+{-# OPTIONS -fno-warn-deprecations #-}
 module Data.Mgz.Simulate.Command where
 import RIO
 
+import Data.Mgz.Utils
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import Data.Mgz.Simulate.Objects
@@ -34,9 +36,20 @@ instance RunCommand Command where
   runCommand (CommandTypeStop c) = runCommand c
   runCommand (CommandTypeRally c) = runCommand c
   runCommand (CommandTypeDelete c) = runCommand c
+  runCommand (CommandTypeWall c) = runCommand c
+  runCommand (CommandTypeResign c) = runCommand c
+  runCommand (CommandTypeAttackGround c) = runCommand c
+  runCommand (CommandTypeTribute c) = runCommand c
+  runCommand (CommandTypeRepair c) = runCommand c
+  runCommand (CommandTypeUngarrison c) = runCommand c
+  runCommand (CommandTypeToggleGate c) = runCommand c
+  runCommand (CommandTypeGarrison c) = runCommand c
+  runCommand (CommandTypeSell c) = runCommand c
+  runCommand (CommandTypeBuy c) = runCommand c
+  runCommand (CommandTypeDropRelic c) = runCommand c
+  runCommand (CommandTypeTownBell c) = runCommand c
+  runCommand (CommandTypeBackToWork c) = runCommand c
   runCommand (CommandUnparsed _ _) = pure Nothing
-  runCommand (CommandTypeWall _) = pure Nothing
-  runCommand _  = pure Nothing
 
 commandPlayerId :: Command -> Maybe PlayerId
 commandPlayerId (CommandTypePrimary CommandPrimary{..}) = Just commandPrimaryPlayerId
@@ -46,6 +59,10 @@ commandPlayerId (CommandTypeResearch CommandResearch{..}) = Just commandResearch
 commandPlayerId (CommandTypeBuild CommandBuild{..}) = Just commandBuildPlayerId
 commandPlayerId (CommandTypeWall CommandWall{..}) = Just commandWallPlayerId
 commandPlayerId (CommandTypeWaypoint CommandWaypoint{..}) = Just commandWaypointPlayerId
+commandPlayerId (CommandTypeResign CommandResign{..}) = Just commandResignPlayerId
+commandPlayerId (CommandTypeTribute CommandTribute{..}) = Just commandTributeFrom
+commandPlayerId (CommandTypeSell CommandSell{..}) = Just commandSellPlayer
+commandPlayerId (CommandTypeBuy CommandBuy{..}) = Just commandBuyPlayer
 commandPlayerId (CommandTypeDelete CommandDelete{..}) = Just commandDeletePlayerId
 commandPlayerId _ = Nothing
 
@@ -186,5 +203,149 @@ instance RunCommand CommandDelete where
 
 
 
+instance RunCommand CommandResign where
+  runCommand CommandResign{..} = do
+    pure . Just $ EventTypeResign $ EventResign {
+        eventResignPlayerId = commandResignPlayerId
+      }
+
+instance RunCommand CommandAttackGround where
+  runCommand CommandAttackGround{..} = do
+    units <- mapM getUnit commandAttackGroundSelectedIds
+
+    pure . Just $ EventTypeAttackGround $ EventAttackGround {
+        eventAttackGroundUnitIds = map unitId units,
+        eventAttackGroundPos = commandAttackGroundPos
+      }
+
+instance RunCommand CommandTribute where
+  runCommand CommandTribute{..} = do
+    pure . Just $ EventTypeTribute $ EventTribute {
+        eventTributeFrom = commandTributeFrom,
+        eventTributeTo = commandTributeTo,
+        eventTributeResourceKind = commandTributeResourceKind,
+        eventTributeAmount = commandTributeAmount,
+        eventTributeTransationFee = commanndTributeTransationFee
+      }
+
+instance RunCommand CommandRepair where
+  runCommand CommandRepair{..} = do
+    units <- mapM getUnit commandRepairRepairers
+    target <- getObject commandRepairRepaired
+    pure . Just $ EventTypeRepair $ EventRepair {
+      eventRepairRepaired = objectId target
+    , eventRepairRepairers = map unitId units
+    }
+
+instance RunCommand CommandUngarrison where
+  runCommand CommandUngarrison{..} = do
+    objects <- case commandUngarrisonPos of
+      Nothing -> mapM (fmap objectFromObjectBuilding . getBuilding) commandUngarrisonReleasedFrom
+      Just _ -> mapM getObject commandUngarrisonReleasedFrom
+
+    unit <- fmapMaybe getUnit commandUngarrisonObjectClicked
+    pure . Just $ EventTypeUngarrison $ EventUngarrison {
+      eventUngarrisonType = commandUngarrisonType
+    , eventUngarrisonPos = commandUngarrisonPos
+    , eventUngarrisonObjectClicked = fmap unitId unit
+    , eventUngarrisonReleasedFrom = map objectId objects
+    }
+
+instance RunCommand CommandToggleGate where
+  runCommand CommandToggleGate{..} = do
+    b <- getBuilding commandToggleGateGate
+
+    _ <- updateBuildingWithBuildingType (objectFromObjectBuilding b) (nonEmptyPartial [OT_Gate, OT_PalisadeGate])
+    pure . Just $ EventTypeToggleGate $ EventToggleGate {
+      eventToggleGateGate = buildingId b
+    }
+
+instance RunCommand CommandGarrison where
+  runCommand c@CommandGarrison{..} =
+    if commandGarrisonType `elem` [GarrisonTypePack, GarrisonTypeUnpack]
+      then do
+        trebs <- mapM (\i -> fmap asUnit $ getObjectAsType i OT_Trebuchet) commandGarrisonSelectedIds
+        pure . Just $ EventTypePackOrUnpack $ EventPackOrUnpack {
+          eventPackOrUnpackTrebuchets = map unitId trebs
+        , eventPackOrUnpackPacked = commandGarrisonType == GarrisonTypePack
+        }
+      else
+        if commandGarrisonType == GarrisonTypeGarrison
+          then do
+            case commandGarrisonTargetId of
+              Nothing -> do
+                traceShowM c
+                error "Garrisoning should have a target!"
+              Just t -> do
+                 units <- mapM getUnit commandGarrisonSelectedIds
+                 target <- getObject t
+                 pure . Just $ EventTypeGarrison $ EventGarrison {
+                    eventGarrisonTargetId = objectId target
+                  , eventGarrisonGarrisonedUnits = map unitId units
+                  , eventGarrisonPos = commandGarrisonPos
+                  }
+
+          else do
+            traceShowM $ c
+            traceM $ "Weird garrison command!!!"
+            pure Nothing
 
 
+instance RunCommand CommandSell where
+  runCommand CommandSell{..} = do
+    _ <- getBuildingForPlayer commandSellMarket commandSellPlayer
+
+    market <- fmap asBuilding $ getObjectAsType commandSellMarket OT_Market
+    pure . Just $ EventTypeUseMarket $ EventUseMarket {
+        eventUseMarketBuyOrSell = Sell
+      , eventUseMarketKind = commandSellKind
+      , eventUseMarketAmount = commandSellAmount
+      , eventUseMarketMarket = buildingId market
+
+      }
+
+instance RunCommand CommandBuy where
+  runCommand CommandBuy{..} = do
+    _ <- getBuildingForPlayer commandBuyMarket commandBuyPlayer
+    market <- fmap asBuilding $ getObjectAsType commandBuyMarket OT_Market
+    pure . Just $ EventTypeUseMarket $ EventUseMarket {
+        eventUseMarketBuyOrSell = Buy
+      , eventUseMarketKind = commandBuyKind
+      , eventUseMarketAmount = commandBuyAmount
+      , eventUseMarketMarket = buildingId market
+
+      }
+
+
+instance RunCommand CommandDropRelic where
+  runCommand CommandDropRelic{..} = do
+    m <- fmap asUnit $ getObjectAsType commandDropRelicMonkId OT_Monk
+    pure . Just $ EventTypeDropRelic $ EventDropRelic {
+      eventDropRelicMonkId = unitId m
+    }
+
+instance RunCommand CommandTownBell where
+  runCommand CommandTownBell{..} = do
+    m <- fmap asBuilding $ getObjectAsType commandTownBellTownCenter OT_TownCenter
+    pure . Just $ EventTypeTownBell $ EventTownBell {
+      eventTownBellTownCenter = buildingId m,
+      eventTownBellActive = commandTownBellActive
+    }
+
+instance RunCommand CommandBackToWork where
+  runCommand CommandBackToWork{..} = do
+    m <- getBuilding commandBackToWorkBuildingId
+    pure . Just $ EventTypeBackToWork $ EventBackToWork {
+      eventBackToWorkBuildingId = buildingId m
+    }
+
+instance RunCommand CommandWall where
+  runCommand CommandWall{..} = do
+
+    units <- getUnitsForPlayer commandWallBuilders commandWallPlayerId
+    pure . Just $ EventTypeWall $ EventWall {
+      eventWallStartPos = commandWallStartPos
+    , eventWallEndPos = commandWallEndPos
+    , eventWallBuildingType = commandWallBuildingType
+    , eventWallBuilders = map unitId units
+    }
