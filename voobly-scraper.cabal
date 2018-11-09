@@ -17,6 +17,8 @@ library
     Voobly.DB
     Voobly.TH
     Data.Mgz.Deserialise
+    Data.Mgz.Deserialise.BasicTypes
+    Data.Mgz.Deserialise.Commands
     Data.Mgz.Simulate
     Data.Mgz.Constants
     Data.Mgz.Constants.Techs
@@ -60,7 +62,8 @@ library
     bytestring,
     text,
     base16-bytestring,
-    text-format
+    text-format,
+    binary-parsers
 
   hs-source-dirs:      src
   ghc-options:         -Wall

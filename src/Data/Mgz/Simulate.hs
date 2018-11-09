@@ -1,3 +1,4 @@
+{-# OPTIONS -fno-warn-deprecations #-}
 {-# LANGUAGE TemplateHaskell    #-}
 
 module Data.Mgz.Simulate where
@@ -954,13 +955,15 @@ linkBuildingsToCommands = do
                      [] -> do
                       traceShowM $ o
                       mapM debugBuildEvent $ buildEvents
-                      traceShowM $ "Impossible - this building was never placed?"
+                      traceM $ "Impossible - this building was never placed?"
                       error ""
                      [x] -> do
                       pure $ Just x
                      _xs -> do
+                      traceM $ "\n\n"
                       traceShowM $ o
-                      mapM debugBuildEvent $ buildEvents
+                      mapM debugBuildEvent $ _xs
+                      error ""
                       pure Nothing
 
 
@@ -1057,14 +1060,24 @@ buildBasicEvents _ = pure ()
 
 addCommandAsEvent :: Command -> Sim ()
 addCommandAsEvent c@(CommandTypePrimary CommandPrimary{..}) = do
-  target <- getObject commandPrimaryTargetId
-  uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
-  objs <- getObjectsForPlayer uids commandPrimaryPlayerId
-  let eType = EventTypePrimary $ EventPrimary {
-      eventPrimaryObjects = map objectId objs
-    , eventPrimaryTarget = objectId target
-    , eventPrimaryPos = commandPrimaryPos
-    }
+  eType <-
+    case commandPrimaryTargetId of
+      Just tid -> do
+        target <- getObject tid
+        uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
+        objs <- getObjectsForPlayer uids commandPrimaryPlayerId
+        pure $ EventTypePrimary $ EventPrimary {
+            eventPrimaryObjects = map objectId objs
+          , eventPrimaryTarget = objectId target
+          , eventPrimaryPos = commandPrimaryPos
+          }
+      Nothing -> do
+          uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
+          units <- getUnitsForPlayer uids commandPrimaryPlayerId
+          pure . EventTypeMove $ EventMove {
+              eventMoveUnits = map unitId units
+            , eventMovePos = commandPrimaryPos
+            }
   addRealEvent c (Just commandPrimaryPlayerId) eType
 
 addCommandAsEvent c@(CommandTypeMove CommandMove{..}) = do
