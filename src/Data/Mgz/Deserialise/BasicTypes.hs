@@ -15,6 +15,12 @@ import qualified Data.ByteString.Builder as Builder
 import Data.Text.Encoding
 import qualified Data.ByteString.Base16 as Base16
 
+import Data.Mgz.Constants
+
+newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord) -- object id from rec file - we don't know anything about it!
+
+newtype PlayerId = PlayerId Int deriving (Show, Eq, Ord, Generic) -- 1,2 etc - same as the rec file
+instance Hashable PlayerId
 
 existObjectsBreak :: ByteString
 existObjectsBreak = fst $ Base16.decode "0b0008000000020000"
@@ -38,19 +44,19 @@ class SimpleGet a where
   simpleGet :: SGet a
 
 
-type EitherInheritOrIds = Either () [Int]
+type EitherInheritOrIds = Either () [ObjectId]
 
 getSelectedUnitsOrInherit :: Int -> Get EitherInheritOrIds
 getSelectedUnitsOrInherit 255 = pure $ Left ()
 getSelectedUnitsOrInherit (-1) = pure $ Left ()
 getSelectedUnitsOrInherit 0 = fail "No units to parse in getSelectedUnitsOrInherit"
 getSelectedUnitsOrInherit n | n < 0 = fail $ "Got a negative number in getSelectedUnitsOrInherit" ++ show n
-                            | otherwise = fmap Right $ replicateM n parseInt32
+                            | otherwise = fmap Right $ replicateM n (fmap ObjectId parseInt32)
 
-getSelectedUnits :: Int -> Get [Int]
+getSelectedUnits :: Int -> Get [ObjectId]
 getSelectedUnits 0 = fail "No units to parse"
 getSelectedUnits n | n < 0 = fail "Got a negative number in getSelectedUnits"
-                     | otherwise =  replicateM n parseInt32
+                     | otherwise =  replicateM n (fmap ObjectId parseInt32)
 
 data Pos = Pos {
   posX :: Float,
@@ -88,12 +94,12 @@ getTile (x,y) = do
   pure $ Tile x y terrain elevation
 
 data PlayerInfo = PlayerInfo {
-  playerInfoNumber :: Int ,
+  playerInfoPlayerId :: PlayerId,
   playerInfoName :: Text,
   playerInfoObjects :: [ObjectRaw]
 } deriving (Show, Eq, Ord)
 
-getPlayerInfo :: Int -> Int -> Get PlayerInfo
+getPlayerInfo :: Int -> PlayerId -> Get PlayerInfo
 getPlayerInfo numPlayers playerNumber = do
   G.skip $ numPlayers + 43
 
@@ -105,10 +111,10 @@ getPlayerInfo numPlayers playerNumber = do
 
 data ObjectRaw = ObjectRaw {
   objectRawType :: Int,
-  objectRawOwner :: Int,
-  objectRawUnitId :: Int,
+  objectRawOwner :: PlayerId,
+  objectRawUnitId :: ObjectType,
   objectRawHitpoints :: Int,
-  objectRawObjectId :: Int,
+  objectRawObjectId :: ObjectId,
   objectRawPos :: Pos,
   objectRawExtra :: Maybe ObjectRawExtra
 } deriving (Show, Eq, Ord)
@@ -127,12 +133,12 @@ getObjectRawSkipSeparators = do
 getObjectRaw :: Get ObjectRaw
 getObjectRaw = do
   objType <-  parseInt8
-  objOwner <-  parseInt8
-  objUnitId <-  parseInt16
+  objOwner <- fmap PlayerId parseInt8
+  objUnitId <- fmap normaliseObjectType parseInt16
   G.skip 6
   objHitpoints <- parseInt32
   G.skip 4
-  objId <- parseInt32
+  objId <- fmap ObjectId  parseInt32
   G.skip 1
   pos <- getPos
   let obj = ObjectRaw objType objOwner objUnitId objHitpoints objId pos
@@ -161,7 +167,7 @@ getObjectRaw = do
 
 debugPlayer :: PlayerInfo -> Get ()
 debugPlayer PlayerInfo{..} = do
-  traceM $ "Player: " <> displayShowT playerInfoNumber <> " called " <> displayShowT playerInfoName
+  traceM $ "Player: " <> displayShowT playerInfoPlayerId <> " called " <> displayShowT playerInfoName
   traceM $ "Total objects: " <> displayShowT (length playerInfoObjects)
   traceM $ "Map objects: " <> displayShowT (length $ filter ((==) 10 . objectRawType) playerInfoObjects)
   traceM $ "Creatables: " <> displayShowT (length $ filter ((==) 70 . objectRawType) playerInfoObjects)
@@ -218,6 +224,21 @@ parseInt16 =  fmap fromIntegral G.getInt16le
 
 parseInt32 :: Get Int
 parseInt32 = fmap fromIntegral G.getInt32le
+
+parseObjectId :: Get ObjectId
+parseObjectId = fmap ObjectId parseInt32
+
+parseMaybeObjectId :: Get (Maybe ObjectId)
+parseMaybeObjectId = do
+  t <- parseInt32
+  if t < 1
+    then pure Nothing
+    else pure . Just . ObjectId $ t
+
+normaliseObjectTypeMaybe :: Int -> Maybe ObjectType
+normaliseObjectTypeMaybe 65535 = Nothing
+normaliseObjectTypeMaybe i = Just $ normaliseObjectType i
+
 
 showNextNBytes :: Int -> Get ()
 showNextNBytes n = do

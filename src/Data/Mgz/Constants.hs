@@ -96,15 +96,6 @@ canMilitaryPrimaryAct OT_StoneMine = False
 canMilitaryPrimaryAct _ = True
 
 
--- witness the type of an object
-data ObjectTypeW =
-    ObjectTypeWUnit
-  | ObjectTypeWBuilding
-  | ObjectTypeWMapObject
-  | ObjectTypeWUnknown
-  deriving (Show, Eq, Ord)
-
-
-objectTypeToObjectTypeW :: ObjectType -> ObjectTypeW
-objectTypeToObjectTypeW OT_Castle = ObjectTypeWBuilding
-objectTypeToObjectTypeW ot = error $ "objectTypeToObjectTypeW : Nothing defined for ot " ++ show ot
+objectPartsNumber :: ObjectType -> Int
+objectPartsNumber OT_TownCenter = 4
+objectPartsNumber _ = 1

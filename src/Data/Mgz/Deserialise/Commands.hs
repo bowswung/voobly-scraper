@@ -9,6 +9,7 @@ import Data.Binary.Get (Get)
 -- Partial deserialiser
 
 import Data.Mgz.Deserialise.BasicTypes
+import Data.Mgz.Constants
 
 
 data Op =
@@ -105,17 +106,17 @@ instance SimpleGet Command where
 
 
 data CommandPrimary = CommandPrimary {
-  commandPrimaryPlayerId :: Int
-, commandPrimaryTargetId :: Maybe Int
+  commandPrimaryPlayerId :: PlayerId
+, commandPrimaryTargetId :: Maybe ObjectId
 , commandPrimaryPos :: Pos
 , commandPrimaryUnitIds :: EitherInheritOrIds
 } deriving (Show, Eq, Ord)
 
 instance SimpleGet CommandPrimary where
   simpleGet = do
-    commandPrimaryPlayerId <- parseInt8
+    commandPrimaryPlayerId <- fmap PlayerId parseInt8
     G.skip 2
-    commandPrimaryTargetId <- fmap (\t -> if t < 1 then Nothing else Just t) parseInt32
+    commandPrimaryTargetId <- parseMaybeObjectId
     selectCount <- parseInt8
     G.skip 3
     commandPrimaryPos <- getPos
@@ -123,14 +124,14 @@ instance SimpleGet CommandPrimary where
     pure CommandPrimary{..}
 
 data CommandMove = CommandMove {
-  commandMovePlayerId :: Int
+  commandMovePlayerId :: PlayerId
 , commandMovePos :: Pos
 , commandMoveUnitIds :: EitherInheritOrIds
 } deriving (Show, Eq, Ord)
 
 instance SimpleGet CommandMove where
   simpleGet = do
-    commandMovePlayerId <- parseInt8
+    commandMovePlayerId <- fmap PlayerId parseInt8
     G.skip 6
     selectCount <- parseInt32
     commandMovePos <- getPos
@@ -140,7 +141,7 @@ instance SimpleGet CommandMove where
 
 data CommandStance = CommandStance {
   commandStanceStance :: Int
-, commandStanceUnitIds :: [Int]
+, commandStanceUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -154,7 +155,7 @@ instance SimpleGet CommandStance where
 
 data CommandGuard = CommandGuard {
   commandGuardGuarded :: Int
-, commandGuardUnitIds :: [Int]
+, commandGuardUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -170,7 +171,7 @@ instance SimpleGet CommandGuard where
 
 data CommandFollow = CommandFollow {
   commandFollowFollowed :: Int
-, commandFollowUnitIds :: [Int]
+, commandFollowUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -185,7 +186,7 @@ instance SimpleGet CommandFollow where
 
 data CommandPatrol = CommandPatrol {
   commandPatrolWaypoints :: [Pos]
-, commandPatrolUnitIds :: [Int]
+, commandPatrolUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -199,16 +200,16 @@ instance SimpleGet CommandPatrol where
     pure CommandPatrol{..}
 
 data CommandFormation = CommandFormation {
-  commandFormationPlayerId :: Int
+  commandFormationPlayerId :: PlayerId
 , commandFormationFormation :: Int
-, commandFormationUnitIds :: [Int]
+, commandFormationUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
 instance SimpleGet CommandFormation where
   simpleGet = do
     selectCount <- parseInt8
-    commandFormationPlayerId <- parseInt32
+    commandFormationPlayerId <- fmap PlayerId parseInt32
     G.skip 1
     commandFormationFormation <- parseInt8
     G.skip 3
@@ -218,8 +219,8 @@ instance SimpleGet CommandFormation where
 
 
 data CommandResearch = CommandResearch {
-  commandResearchBuildingId :: Int
-, commandResearchPlayerId :: Int
+  commandResearchBuildingId :: ObjectId
+, commandResearchPlayerId :: PlayerId
 , commandResearchResearch :: Int
 } deriving (Show, Eq, Ord)
 
@@ -227,57 +228,57 @@ data CommandResearch = CommandResearch {
 instance SimpleGet CommandResearch where
   simpleGet = do
     G.skip 3
-    commandResearchBuildingId <- parseInt32
-    commandResearchPlayerId <- parseInt8
+    commandResearchBuildingId <- parseObjectId
+    commandResearchPlayerId <- fmap PlayerId parseInt8
     G.skip 1
     commandResearchResearch <- parseInt16
     G.skip 4
     pure CommandResearch{..}
 
 data CommandBuild = CommandBuild {
-  commandBuildPlayerId :: Int
+  commandBuildPlayerId :: PlayerId
 , commandBuildPos :: Pos
-, commandBuildBuildingType :: Int
-, commandBuildBuilders :: [Int]
+, commandBuildBuildingType :: ObjectType
+, commandBuildBuilders :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
 instance SimpleGet CommandBuild where
   simpleGet = do
     selectCount <- parseInt8
-    commandBuildPlayerId <- parseInt8
+    commandBuildPlayerId <- fmap PlayerId parseInt8
     G.skip 1
     commandBuildPos <- getPos
-    commandBuildBuildingType <- parseInt16
+    commandBuildBuildingType <- fmap normaliseObjectType parseInt16
     G.skip 10
     commandBuildBuilders <- getSelectedUnits selectCount
     pure CommandBuild{..}
 
 
+data CommandWall = CommandWall {
+  commandWallPlayerId :: PlayerId
+, commandWallStartPos :: PosSimple
+, commandWallEndPos :: PosSimple
+, commandWallBuildingType :: ObjectType
+, commandWallBuilders :: [ObjectId]
+} deriving (Show, Eq, Ord)
 
 instance SimpleGet CommandWall where
   simpleGet = do
     selectCount <- parseInt8
-    commandWallPlayerId <- parseInt8
+    commandWallPlayerId <- fmap PlayerId parseInt8
     commandWallStartPos <- PosSimple <$> parseInt8 <*> parseInt8
     commandWallEndPos <- PosSimple <$> parseInt8 <*> parseInt8
     G.skip 1
-    commandWallBuildingType <- parseInt16
+    commandWallBuildingType <- fmap normaliseObjectType parseInt16
     G.skip 6
     commandWallBuilders <- getSelectedUnits selectCount
     pure CommandWall{..}
 
-data CommandWall = CommandWall {
-  commandWallPlayerId :: Int
-, commandWallStartPos :: PosSimple
-, commandWallEndPos :: PosSimple
-, commandWallBuildingType :: Int
-, commandWallBuilders :: [Int]
-} deriving (Show, Eq, Ord)
 
 data CommandTrain = CommandTrain {
-  commandTrainBuildingId :: Int
-, commandTrainUnitType :: Int
+  commandTrainBuildingId :: ObjectId
+, commandTrainUnitType :: ObjectType
 , commandTrainNumber :: Int
 } deriving (Show, Eq, Ord)
 
@@ -287,14 +288,14 @@ data CommandTrain = CommandTrain {
 instance SimpleGet CommandTrain where
   simpleGet = do
     G.skip 3
-    commandTrainBuildingId <- parseInt32
-    commandTrainUnitType <- parseInt16
+    commandTrainBuildingId <- parseObjectId
+    commandTrainUnitType <- fmap normaliseObjectType parseInt16
     commandTrainNumber <- parseInt16
     pure CommandTrain{..}
 
 
 data CommandWaypoint = CommandWaypoint {
-  commandWaypointPlayerId :: Int
+  commandWaypointPlayerId :: PlayerId
 , commandWaypointSelectedIds ::  EitherInheritOrIds -- can be building ids?
 , commandWaypointPos :: PosSimple
 } deriving (Show, Eq, Ord)
@@ -303,7 +304,7 @@ data CommandWaypoint = CommandWaypoint {
 
 instance SimpleGet CommandWaypoint where
   simpleGet = do
-    commandWaypointPlayerId <- parseInt8
+    commandWaypointPlayerId <- fmap PlayerId parseInt8
     selectCount <- parseInt8
     commandWaypointPos <- PosSimple <$> parseInt8 <*> parseInt8
     commandWaypointSelectedIds <- getSelectedUnitsOrInherit selectCount
@@ -311,7 +312,7 @@ instance SimpleGet CommandWaypoint where
 
 
 data CommandStop = CommandStop {
-  commandStopSelectedIds :: [Int]
+  commandStopSelectedIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -323,10 +324,10 @@ instance SimpleGet CommandStop where
 
 
 data CommandRally = CommandRally {
-  commandRallyTargetObject :: Maybe Int
-, commandRallyTargetType :: Maybe Int
+  commandRallyTargetObject :: Maybe ObjectId
+, commandRallyTargetType :: Maybe ObjectType
 , commandRallyPos :: Pos
-, commandRallySelectedBuildingIds :: [Int]
+, commandRallySelectedBuildingIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
 
@@ -334,26 +335,24 @@ instance SimpleGet CommandRally where
   simpleGet = do
     selectCount <- parseInt8
     G.skip 2
-    mto <- parseInt32
-    mtt <- parseInt32
-    let commandRallyTargetObject = if mto == -1 then Nothing else Just mto
-        commandRallyTargetType = if mtt == 65535 then Nothing else Just mtt
+    commandRallyTargetObject <- parseMaybeObjectId
+    commandRallyTargetType <- fmap normaliseObjectTypeMaybe parseInt32
     commandRallyPos <- getPos
     commandRallySelectedBuildingIds <- getSelectedUnits selectCount
     pure CommandRally{..}
 
 
 data CommandDelete = CommandDelete {
-  commandDeleteObjectId :: Int
-, commandDeletePlayerId :: Int
+  commandDeleteObjectId :: ObjectId
+, commandDeletePlayerId :: PlayerId
 } deriving (Show, Eq, Ord)
 
 
 instance SimpleGet CommandDelete where
   simpleGet = do
     G.skip 3
-    commandDeleteObjectId <- parseInt32
-    commandDeletePlayerId <- parseInt8
+    commandDeleteObjectId <- parseObjectId
+    commandDeletePlayerId <- fmap PlayerId parseInt8
     G.skip 3
     pure CommandDelete{..}
 

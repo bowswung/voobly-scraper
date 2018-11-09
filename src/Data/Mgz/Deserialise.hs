@@ -85,7 +85,7 @@ getInflatedHeader = do
   G.skip 4
   G.skip =<< fmap (* 27) parseInt32
   G.skip 4
-  players <- sequence $ map (getPlayerInfo numPlayers) [0..numPlayers-1]
+  players <- sequence $ map (getPlayerInfo numPlayers) $ map PlayerId [0..numPlayers-1]
   void $ mapM debugPlayer players
   pure $ Header players tiles
 

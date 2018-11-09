@@ -16,10 +16,16 @@ library
     Voobly.Scraper
     Voobly.DB
     Voobly.TH
+    Data.Mgz.Utils
     Data.Mgz.Deserialise
     Data.Mgz.Deserialise.BasicTypes
     Data.Mgz.Deserialise.Commands
     Data.Mgz.Simulate
+    Data.Mgz.Simulate.Objects
+    Data.Mgz.Simulate.State
+    Data.Mgz.Simulate.Events
+    Data.Mgz.Simulate.Render
+    Data.Mgz.Simulate.Command
     Data.Mgz.Constants
     Data.Mgz.Constants.Techs
     Data.Mgz.Constants.Objects
