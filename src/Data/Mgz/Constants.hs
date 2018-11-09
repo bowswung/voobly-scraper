@@ -12,8 +12,17 @@ import qualified RIO.List as L
 
 buildingToTechMap :: HM.HashMap ObjectType [Tech]
 buildingToTechMap = HM.fromList [
-    (OT_LumberCamp, [Tech_DoubleBitAxe])
+    (OT_LumberCamp, [Tech_DoubleBitAxe, Tech_TwoManSaw])
   , (OT_Barracks, [Tech_ManAtArms])
+  , (OT_Castle, [Tech_Conscription, Tech_EliteWarWagon])
+  , (OT_Mill, [Tech_HorseCollar,Tech_HeavyPlow])
+  , (OT_Barracks, [Tech_Pikeman,Tech_Squires])
+  , (OT_MiningCamp, [Tech_StoneMining,Tech_GoldShaftMining, Tech_GoldMining,Tech_StoneShaftMining ])
+  , (OT_Blacksmith, [Tech_Fletching,Tech_BodkinArrow,Tech_PaddedArcherArmor,Tech_Bracer,Tech_LeatherArcherArmor,Tech_ScaleBardingArmor,Tech_Forging,Tech_ChainBardingArmor ])
+  , (OT_TownCenter, [Tech_TownWatch, Tech_HandCart])
+  , (OT_SiegeWorkshop, [Tech_CappedRam])
+  , (OT_University, [Tech_Ballistics, Tech_Masonry])
+  , (OT_Stable, [Tech_LightCavalry,Tech_Husbandry, Tech_Hussar])
   ]
 
 techToBuildingMap :: HM.HashMap Tech [ObjectType]
@@ -27,11 +36,14 @@ flipListHM m =
   in HM.fromList grouped
 
 
-
 buildingToTrainUnitMap :: HM.HashMap ObjectType [ObjectType]
 buildingToTrainUnitMap = HM.fromList [
     (OT_TownCenter, [OT_Villager])
-  , (OT_Barracks, [OT_ManAtArms])
+  , (OT_Barracks, [OT_Militia, OT_ManAtArms, OT_Spearman])
+  , (OT_ArcheryRange, [OT_Archer, OT_Skirmisher])
+  , (OT_Castle, [OT_WarWagon, OT_TrebuchetPacked])
+  , (OT_SiegeWorkshop, [OT_Mangonel,OT_BatteringRam])
+  , (OT_Monastery, [OT_Monk])
   ]
 
 trainUnitToBuildingMap ::  HM.HashMap ObjectType [ObjectType]
@@ -82,3 +94,17 @@ canMilitaryPrimaryAct OT_ForageBush = False
 canMilitaryPrimaryAct OT_GoldMine = False
 canMilitaryPrimaryAct OT_StoneMine = False
 canMilitaryPrimaryAct _ = True
+
+
+-- witness the type of an object
+data ObjectTypeW =
+    ObjectTypeWUnit
+  | ObjectTypeWBuilding
+  | ObjectTypeWMapObject
+  | ObjectTypeWUnknown
+  deriving (Show, Eq, Ord)
+
+
+objectTypeToObjectTypeW :: ObjectType -> ObjectTypeW
+objectTypeToObjectTypeW OT_Castle = ObjectTypeWBuilding
+objectTypeToObjectTypeW ot = error $ "objectTypeToObjectTypeW : Nothing defined for ot " ++ show ot
