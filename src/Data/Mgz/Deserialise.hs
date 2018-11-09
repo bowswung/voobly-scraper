@@ -49,7 +49,7 @@ data Header = Header {
 
 getHeader :: Get Header
 getHeader = do
-  headerLen <- parseInt32
+  headerLen <- getInt32Int
   G.skip 4
   headerRaw <- G.getLazyByteString (fromIntegral $ headerLen - 8)
   case runGetEither getInflatedHeader $ Zlib.decompress headerRaw of
@@ -61,29 +61,29 @@ getInflatedHeader :: Get Header
 getInflatedHeader = do
   _headerVersion <- takeText 8
   _bs <- G.getFloatle
-  _includeAi <- parseInt32
+  _includeAi <- getInt32Int
   G.skip 4
-  _gameSpeed <-  parseInt32
+  _gameSpeed <-  getInt32Int
   G.skip 37
 
-  _pov <-  parseInt16
-  numPlayers <-  parseInt8 -- this includes gaia
-  _gameMode <-  parseInt16
+  _pov <-  getInt16Int
+  numPlayers <-  getInt8Int -- this includes gaia
+  _gameMode <-  getInt16Int
   G.skip 60
-  mapSizeX <-  parseInt32
-  mapSizeY <-  parseInt32
-  _zones <- parseInt32
-  _allVisible <- parseBool
-  _fogOfWar <-  parseBool
+  mapSizeX <-  getInt32Int
+  mapSizeY <-  getInt32Int
+  _zones <- getInt32Int
+  _allVisible <- getBool
+  _fogOfWar <-  getBool
   tiles <- sequence $ map getTile $ [(x,y) | y <- [0 .. mapSizeY -1], x <- [0.. mapSizeX-1]]
-  obstructions <-  parseInt32
+  obstructions <-  getInt32Int
   G.skip $ 4 + obstructions * 4
-  void $ replicateM obstructions $ parseInt32 >>= (G.skip . ((*) 8))
-  mapSizeX2 <-  parseInt32
-  mapSizeY2 <-  parseInt32
+  void $ replicateM obstructions $ getInt32Int >>= (G.skip . ((*) 8))
+  mapSizeX2 <-  getInt32Int
+  mapSizeY2 <-  getInt32Int
   G.skip $ mapSizeX2 * mapSizeY2 * 4  -- skip visibility mapSizeX2
   G.skip 4
-  G.skip =<< fmap (* 27) parseInt32
+  G.skip =<< fmap (* 27) getInt32Int
   G.skip 4
   players <- sequence $ map (getPlayerInfo numPlayers) $ map PlayerId [0..numPlayers-1]
   void $ mapM debugPlayer players

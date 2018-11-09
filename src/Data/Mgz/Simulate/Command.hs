@@ -36,6 +36,7 @@ instance RunCommand Command where
   runCommand (CommandTypeDelete c) = runCommand c
   runCommand (CommandUnparsed _ _) = pure Nothing
   runCommand (CommandTypeWall _) = pure Nothing
+  runCommand _  = pure Nothing
 
 commandPlayerId :: Command -> Maybe PlayerId
 commandPlayerId (CommandTypePrimary CommandPrimary{..}) = Just commandPrimaryPlayerId

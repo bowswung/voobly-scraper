@@ -51,13 +51,39 @@ getSelectedUnitsOrInherit 255 = pure $ Left ()
 getSelectedUnitsOrInherit (-1) = pure $ Left ()
 getSelectedUnitsOrInherit 0 = fail "No units to parse in getSelectedUnitsOrInherit"
 getSelectedUnitsOrInherit n | n < 0 = fail $ "Got a negative number in getSelectedUnitsOrInherit" ++ show n
-                            | otherwise = fmap Right $ replicateM n (fmap ObjectId parseInt32)
+                            | otherwise = fmap Right $ replicateM n (fmap ObjectId getInt32Int)
 
 getSelectedUnits :: Int -> Get [ObjectId]
 getSelectedUnits 0 = fail "No units to parse"
 getSelectedUnits n | n < 0 = fail "Got a negative number in getSelectedUnits"
-                     | otherwise =  replicateM n (fmap ObjectId parseInt32)
+                     | otherwise =  replicateM n (fmap ObjectId getInt32Int)
 
+data GarrisonType =
+    GarrisonTypePack
+  | GarrisonTypeUnpack
+  | GarrisonTypeUnknown
+  | GarrisonTypeGarrison
+  deriving (Show, Eq, Ord)
+
+getGarrisonType :: Get GarrisonType
+getGarrisonType = do
+  t <- getInt8Int
+  case t of
+    1 -> pure $ GarrisonTypePack
+    2 -> pure $ GarrisonTypeUnpack
+    4 -> pure $ GarrisonTypeUnknown
+    5 -> pure $ GarrisonTypeGarrison
+    _ -> fail $ "Could not covert int " ++ show t ++ " to a GarrisonType"
+
+getResourceKind :: Get ResourceKind
+getResourceKind = do
+  k <- getInt8Int
+  case k of
+    0 -> pure $ ResourceKindFood
+    1 -> pure $ ResourceKindWood
+    2 -> pure $ ResourceKindStone
+    3 -> pure $ ResourceKindGold
+    _ -> fail $ "Could not covert int " ++ show k ++ " to a ResourceKind"
 data Pos = Pos {
   posX :: Float,
   posY :: Float
@@ -89,8 +115,8 @@ data Tile = Tile {
 
 getTile :: (Int, Int) -> Get Tile
 getTile (x,y) = do
-  terrain <- parseInt8
-  elevation <- parseInt8
+  terrain <- getInt8Int
+  elevation <- getInt8Int
   pure $ Tile x y terrain elevation
 
 data PlayerInfo = PlayerInfo {
@@ -103,7 +129,7 @@ getPlayerInfo :: Int -> PlayerId -> Get PlayerInfo
 getPlayerInfo numPlayers playerNumber = do
   G.skip $ numPlayers + 43
 
-  playerInfoName <- parseString
+  playerInfoName <- getString
   skipToBreak existObjectsBreak
   objs <- G.manyTill' getObjectRawSkipSeparators (G.string playerInfoEndBreak)
   --diplomacies <- traceParse $ replicateM 9
@@ -132,13 +158,13 @@ getObjectRawSkipSeparators = do
 
 getObjectRaw :: Get ObjectRaw
 getObjectRaw = do
-  objType <-  parseInt8
-  objOwner <- fmap PlayerId parseInt8
-  objUnitId <- fmap normaliseObjectType parseInt16
+  objType <-  getInt8Int
+  objOwner <- fmap PlayerId getInt8Int
+  objUnitId <- fmap normaliseObjectType getInt16Int
   G.skip 6
-  objHitpoints <- parseInt32
+  objHitpoints <- getInt32Int
   G.skip 4
-  objId <- fmap ObjectId  parseInt32
+  objId <- fmap ObjectId  getInt32Int
   G.skip 1
   pos <- getPos
   let obj = ObjectRaw objType objOwner objUnitId objHitpoints objId pos
@@ -146,8 +172,8 @@ getObjectRaw = do
     -- resources and similar?
     10 -> do
       G.skip 12
-      --ns <- traceParse "Unknown" $ replicateM 10 parseInt16
-      resType <-  parseInt16
+      --ns <- traceParse "Unknown" $ replicateM 10 getInt16Int
+      resType <-  getInt16Int
       resAmount <- G.getFloatle
       G.skip 14
       pure $ obj (Just $ ObjectRawExtraRes resType resAmount)
@@ -207,30 +233,30 @@ skipToBreak br = void $ G.manyTill' G.anyWord8 (G.string br)
 takeText :: Int -> Get Text
 takeText n = fmap ((T.dropAround (== '\0')) . decodeLatin1) $ G.getByteString n
 
-parseString :: Get Text
-parseString = do
-  l <- parseInt16
+getString :: Get Text
+getString = do
+  l <- getInt16Int
   takeText l
 
 
-parseBool :: Get Bool
-parseBool = fmap ((<) 0) G.getInt8
+getBool :: Get Bool
+getBool = fmap ((<) 0) G.getInt8
 
-parseInt8 :: Get Int
-parseInt8 = fmap fromIntegral G.getInt8
+getInt8Int :: Get Int
+getInt8Int = fmap fromIntegral G.getInt8
 
-parseInt16 :: Get Int
-parseInt16 =  fmap fromIntegral G.getInt16le
+getInt16Int :: Get Int
+getInt16Int =  fmap fromIntegral G.getInt16le
 
-parseInt32 :: Get Int
-parseInt32 = fmap fromIntegral G.getInt32le
+getInt32Int :: Get Int
+getInt32Int = fmap fromIntegral G.getInt32le
 
-parseObjectId :: Get ObjectId
-parseObjectId = fmap ObjectId parseInt32
+getObjectId :: Get ObjectId
+getObjectId = fmap ObjectId getInt32Int
 
-parseMaybeObjectId :: Get (Maybe ObjectId)
-parseMaybeObjectId = do
-  t <- parseInt32
+getMaybeObjectId :: Get (Maybe ObjectId)
+getMaybeObjectId = do
+  t <- getInt32Int
   if t < 1
     then pure Nothing
     else pure . Just . ObjectId $ t
@@ -239,6 +265,10 @@ normaliseObjectTypeMaybe :: Int -> Maybe ObjectType
 normaliseObjectTypeMaybe 65535 = Nothing
 normaliseObjectTypeMaybe i = Just $ normaliseObjectType i
 
+showRemainingBytes :: Get ()
+showRemainingBytes = do
+  t <- G.lookAhead (G.getRemainingLazyByteString)
+  traceShowBytesM $ BL.toStrict t
 
 showNextNBytes :: Int -> Get ()
 showNextNBytes n = do

@@ -32,20 +32,20 @@ opCommand _ = Nothing
 
 instance SimpleGet Op where
   simpleGet = do
-    opType <- parseInt32
+    opType <- getInt32Int
     case opType of
       1 -> OpTypeCommand <$> simpleGet
       2 -> do
-         t <- parseInt32
-         u <- parseInt32
+         t <- getInt32Int
+         u <- getInt32Int
          when (u == 0) $ G.skip 28
          G.skip 12
          pure $ OpTypeSync (OpSync t)
       4 -> do
-        command <- parseInt32
+        command <- getInt32Int
         case command of
           -1 -> do
-            l <- parseInt32
+            l <- getInt32Int
             c <- takeText l
             pure $ OpTypeMetaChat c
           500 -> do
@@ -76,23 +76,35 @@ data Command =
   | CommandTypeStop CommandStop
   | CommandTypeRally CommandRally
   | CommandTypeDelete CommandDelete
+  | CommandTypeResign CommandResign
+  | CommandTypeAttackGround CommandAttackGround
+  | CommandTypeTribute CommandTribute
+  | CommandTypeRepair CommandRepair
+  | CommandTypeUngarrison CommandUngarrison
+  | CommandTypeToggleGate CommandToggleGate
+  | CommandTypeGarrison CommandGarrison
+  | CommandTypeSell CommandSell
+  | CommandTypeBuy CommandBuy
+  | CommandTypeDropRelic CommandDropRelic
+  | CommandTypeTownBell CommandTownBell
+  | CommandTypeBackToWork CommandBackToWork
   | CommandUnparsed Int ByteString
     deriving (Show, Eq, Ord)
 
 
 instance SimpleGet Command where
   simpleGet = do
-    l <- parseInt32
+    l <- getInt32Int
     G.isolate l $ do
-      cId <- parseInt8
+      cId <- getInt8Int
       case cId of
         0 -> CommandTypePrimary <$> simpleGet
         1 -> CommandTypeStop <$> simpleGet
         3 -> CommandTypeMove <$> simpleGet
-        10 -> CommandTypeFollow <$> simpleGet
         16 -> CommandTypeWaypoint <$> simpleGet
         18 -> CommandTypeStance <$> simpleGet
         19 -> CommandTypeGuard <$> simpleGet
+        20 -> CommandTypeFollow <$> simpleGet
         21 -> CommandTypePatrol <$> simpleGet
         22 -> CommandTypeFormation <$> simpleGet
         101 -> CommandTypeResearch <$> simpleGet
@@ -101,6 +113,18 @@ instance SimpleGet Command where
         106 -> CommandTypeDelete <$> simpleGet
         119 -> CommandTypeTrain <$> simpleGet
         120 -> CommandTypeRally <$> simpleGet
+        11 -> CommandTypeResign <$> simpleGet
+        107 -> CommandTypeAttackGround <$> simpleGet
+        108 -> CommandTypeTribute <$> simpleGet
+        110 -> CommandTypeRepair <$> simpleGet
+        111 -> CommandTypeUngarrison <$> simpleGet
+        114 -> CommandTypeToggleGate <$> simpleGet
+        117 -> CommandTypeGarrison <$> simpleGet
+        122 -> CommandTypeSell <$> simpleGet
+        123 -> CommandTypeBuy <$> simpleGet
+        126 -> CommandTypeDropRelic <$> simpleGet
+        127 -> CommandTypeTownBell <$> simpleGet
+        128 -> CommandTypeBackToWork <$> simpleGet
         n -> CommandUnparsed n <$> (fmap BL.toStrict $ G.getRemainingLazyByteString)
 
 
@@ -114,10 +138,10 @@ data CommandPrimary = CommandPrimary {
 
 instance SimpleGet CommandPrimary where
   simpleGet = do
-    commandPrimaryPlayerId <- fmap PlayerId parseInt8
+    commandPrimaryPlayerId <- fmap PlayerId getInt8Int
     G.skip 2
-    commandPrimaryTargetId <- parseMaybeObjectId
-    selectCount <- parseInt8
+    commandPrimaryTargetId <- getMaybeObjectId
+    selectCount <- getInt8Int
     G.skip 3
     commandPrimaryPos <- getPos
     commandPrimaryUnitIds <- getSelectedUnitsOrInherit selectCount
@@ -131,9 +155,9 @@ data CommandMove = CommandMove {
 
 instance SimpleGet CommandMove where
   simpleGet = do
-    commandMovePlayerId <- fmap PlayerId parseInt8
+    commandMovePlayerId <- fmap PlayerId getInt8Int
     G.skip 6
-    selectCount <- parseInt32
+    selectCount <- getInt32Int
     commandMovePos <- getPos
     commandMoveUnitIds <- getSelectedUnitsOrInherit selectCount
     pure CommandMove{..}
@@ -147,8 +171,8 @@ data CommandStance = CommandStance {
 
 instance SimpleGet CommandStance where
   simpleGet = do
-    selectCount <- parseInt8
-    commandStanceStance <- parseInt8
+    selectCount <- getInt8Int
+    commandStanceStance <- getInt8Int
     commandStanceUnitIds <- getSelectedUnits selectCount
     pure CommandStance{..}
 
@@ -163,9 +187,9 @@ data CommandGuard = CommandGuard {
 
 instance SimpleGet CommandGuard where
   simpleGet = do
-    selectCount <- parseInt8
+    selectCount <- getInt8Int
     G.skip 2
-    commandGuardGuarded <- fmap ObjectId parseInt32
+    commandGuardGuarded <- fmap ObjectId getInt32Int
     commandGuardUnitIds <- getSelectedUnits selectCount
     pure CommandGuard{..}
 
@@ -178,9 +202,9 @@ data CommandFollow = CommandFollow {
 
 instance SimpleGet CommandFollow where
   simpleGet = do
-    selectCount <- parseInt8
+    selectCount <- getInt8Int
     G.skip 2
-    commandFollowFollowed <-  fmap ObjectId parseInt32
+    commandFollowFollowed <-  fmap ObjectId getInt32Int
     commandFollowUnitIds <- getSelectedUnits selectCount
     pure CommandFollow{..}
 
@@ -192,8 +216,8 @@ data CommandPatrol = CommandPatrol {
 
 instance SimpleGet CommandPatrol where
   simpleGet = do
-    selectCount <- parseInt8
-    waypointCount <- parseInt8
+    selectCount <- getInt8Int
+    waypointCount <- getInt8Int
     G.skip 1
     commandPatrolWaypoints <- getMultiplePos waypointCount
     commandPatrolUnitIds <- getSelectedUnits selectCount
@@ -208,10 +232,10 @@ data CommandFormation = CommandFormation {
 
 instance SimpleGet CommandFormation where
   simpleGet = do
-    selectCount <- parseInt8
-    commandFormationPlayerId <- fmap PlayerId parseInt32
+    selectCount <- getInt8Int
+    commandFormationPlayerId <- fmap PlayerId getInt32Int
     G.skip 1
-    commandFormationFormation <- parseInt8
+    commandFormationFormation <- getInt8Int
     G.skip 3
     commandFormationUnitIds <- getSelectedUnits selectCount
     pure CommandFormation{..}
@@ -228,10 +252,10 @@ data CommandResearch = CommandResearch {
 instance SimpleGet CommandResearch where
   simpleGet = do
     G.skip 3
-    commandResearchBuildingId <- parseObjectId
-    commandResearchPlayerId <- fmap PlayerId parseInt8
+    commandResearchBuildingId <- getObjectId
+    commandResearchPlayerId <- fmap PlayerId getInt8Int
     G.skip 1
-    commandResearchResearch <- parseInt16
+    commandResearchResearch <- getInt16Int
     G.skip 4
     pure CommandResearch{..}
 
@@ -245,11 +269,11 @@ data CommandBuild = CommandBuild {
 
 instance SimpleGet CommandBuild where
   simpleGet = do
-    selectCount <- parseInt8
-    commandBuildPlayerId <- fmap PlayerId parseInt8
+    selectCount <- getInt8Int
+    commandBuildPlayerId <- fmap PlayerId getInt8Int
     G.skip 1
     commandBuildPos <- getPos
-    commandBuildBuildingType <- fmap normaliseObjectType parseInt16
+    commandBuildBuildingType <- fmap normaliseObjectType getInt16Int
     G.skip 10
     commandBuildBuilders <- getSelectedUnits selectCount
     pure CommandBuild{..}
@@ -265,12 +289,12 @@ data CommandWall = CommandWall {
 
 instance SimpleGet CommandWall where
   simpleGet = do
-    selectCount <- parseInt8
-    commandWallPlayerId <- fmap PlayerId parseInt8
-    commandWallStartPos <- PosSimple <$> parseInt8 <*> parseInt8
-    commandWallEndPos <- PosSimple <$> parseInt8 <*> parseInt8
+    selectCount <- getInt8Int
+    commandWallPlayerId <- fmap PlayerId getInt8Int
+    commandWallStartPos <- PosSimple <$> getInt8Int <*> getInt8Int
+    commandWallEndPos <- PosSimple <$> getInt8Int <*> getInt8Int
     G.skip 1
-    commandWallBuildingType <- fmap normaliseObjectType parseInt16
+    commandWallBuildingType <- fmap normaliseObjectType getInt16Int
     G.skip 6
     commandWallBuilders <- getSelectedUnits selectCount
     pure CommandWall{..}
@@ -288,9 +312,9 @@ data CommandTrain = CommandTrain {
 instance SimpleGet CommandTrain where
   simpleGet = do
     G.skip 3
-    commandTrainBuildingId <- parseObjectId
-    commandTrainUnitType <- fmap normaliseObjectType parseInt16
-    commandTrainNumber <- parseInt16
+    commandTrainBuildingId <- getObjectId
+    commandTrainUnitType <- fmap normaliseObjectType getInt16Int
+    commandTrainNumber <- getInt16Int
     pure CommandTrain{..}
 
 
@@ -304,9 +328,9 @@ data CommandWaypoint = CommandWaypoint {
 
 instance SimpleGet CommandWaypoint where
   simpleGet = do
-    commandWaypointPlayerId <- fmap PlayerId parseInt8
-    selectCount <- parseInt8
-    commandWaypointPos <- PosSimple <$> parseInt8 <*> parseInt8
+    commandWaypointPlayerId <- fmap PlayerId getInt8Int
+    selectCount <- getInt8Int
+    commandWaypointPos <- PosSimple <$> getInt8Int <*> getInt8Int
     commandWaypointSelectedIds <- getSelectedUnitsOrInherit selectCount
     pure CommandWaypoint{..}
 
@@ -318,7 +342,7 @@ data CommandStop = CommandStop {
 
 instance SimpleGet CommandStop where
   simpleGet = do
-    selectCount <- parseInt8
+    selectCount <- getInt8Int
     commandStopSelectedIds <- getSelectedUnits selectCount
     pure CommandStop{..}
 
@@ -333,10 +357,10 @@ data CommandRally = CommandRally {
 
 instance SimpleGet CommandRally where
   simpleGet = do
-    selectCount <- parseInt8
+    selectCount <- getInt8Int
     G.skip 2
-    commandRallyTargetObject <- parseMaybeObjectId
-    commandRallyTargetType <- fmap normaliseObjectTypeMaybe parseInt32
+    commandRallyTargetObject <- getMaybeObjectId
+    commandRallyTargetType <- fmap normaliseObjectTypeMaybe getInt32Int
     commandRallyPos <- getPos
     commandRallySelectedBuildingIds <- getSelectedUnits selectCount
     pure CommandRally{..}
@@ -351,11 +375,180 @@ data CommandDelete = CommandDelete {
 instance SimpleGet CommandDelete where
   simpleGet = do
     G.skip 3
-    commandDeleteObjectId <- parseObjectId
-    commandDeletePlayerId <- fmap PlayerId parseInt8
+    commandDeleteObjectId <- getObjectId
+    commandDeletePlayerId <- fmap PlayerId getInt8Int
     G.skip 3
     pure CommandDelete{..}
 
+
+data CommandResign = CommandResign {
+  commandResignPlayerId :: PlayerId
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandResign where
+  simpleGet = do
+    G.skip 1
+    commandResignPlayerId <- fmap PlayerId getInt8Int
+    G.skip 1
+    pure CommandResign{..}
+
+data CommandAttackGround = CommandAttackGround {
+  commandAttackGroundSelectedIds :: [ObjectId],
+  commandAttackGroundPos :: Pos
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandAttackGround where
+  simpleGet = do
+    selectCount <- getInt8Int
+    G.skip 2
+    commandAttackGroundPos <- getPos
+    commandAttackGroundSelectedIds <- getSelectedUnits selectCount
+    pure CommandAttackGround{..}
+
+
+data CommandTribute = CommandTribute {
+  commandTributeFrom :: PlayerId,
+  commandTributeTo :: PlayerId,
+  commandTributeResourceKind :: ResourceKind,
+  commandTributeAmount :: Float,
+  commanndTributeTransationFee :: Float
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandTribute where
+  simpleGet = do
+    commandTributeFrom <- fmap PlayerId getInt8Int
+    commandTributeTo <- fmap PlayerId getInt8Int
+    commandTributeResourceKind <- getResourceKind
+    commandTributeAmount <- G.getFloatle
+    commanndTributeTransationFee <- G.getFloatle
+    pure CommandTribute{..}
+
+data CommandRepair = CommandRepair {
+  commandRepairRepaired :: ObjectId,
+  commandRepairRepairers :: [ObjectId]
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandRepair where
+  simpleGet = do
+    selectCount <- getInt8Int
+    G.skip 2
+    commandRepairRepaired <- getObjectId
+    commandRepairRepairers <- getSelectedUnits selectCount
+    pure CommandRepair{..}
+
+data CommandUngarrison = CommandUngarrison {
+  commandUngarrisonPos :: Pos,
+  commandUngarrisonType :: Int,
+  commandUngarrisonObjectClicked :: Maybe ObjectId,
+  commandUngarrisonReleasedFrom :: [ObjectId]
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandUngarrison where
+  simpleGet = do
+    selectCount <- getInt8Int
+    G.skip 2
+    commandUngarrisonPos <- getPos
+    commandUngarrisonType <- getInt8Int
+    G.skip 3
+    commandUngarrisonObjectClicked <- getMaybeObjectId
+    commandUngarrisonReleasedFrom <- getSelectedUnits selectCount
+    pure CommandUngarrison{..}
+
+data CommandToggleGate = CommandToggleGate {
+  commandToggleGateGate:: ObjectId
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandToggleGate where
+  simpleGet = do
+    G.skip 3
+    commandToggleGateGate <- getObjectId
+    pure CommandToggleGate{..}
+
+data CommandGarrison = CommandGarrison {
+  commandGarrisonBuilding:: Maybe ObjectId,
+  commandGarrisonType :: GarrisonType,
+  commandGarrisonPos :: Pos, -- this might be misleading, the pos doesn't seem to be used in the normal way
+  commandGarrisonSelectedIds :: [ObjectId]
+
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandGarrison where
+  simpleGet = do
+    selectCount <- getInt8Int
+    G.skip 2
+    commandGarrisonBuilding <- getMaybeObjectId
+    commandGarrisonType <- getGarrisonType
+    G.skip 3
+    commandGarrisonPos <- getPos
+    G.skip 4
+    commandGarrisonSelectedIds <- getSelectedUnits selectCount
+    pure CommandGarrison{..}
+
+data CommandSell = CommandSell {
+  commandSellPlayer :: PlayerId,
+  commandSellKind :: ResourceKind,
+  commandSellAmount :: Int, -- in hundreds
+  commandSellMarket :: ObjectId
+
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandSell where
+  simpleGet = do
+    commandSellPlayer <- fmap PlayerId getInt8Int
+    commandSellKind <- getResourceKind
+    commandSellAmount <- getInt8Int
+    commandSellMarket <- getObjectId
+    pure CommandSell{..}
+
+data CommandBuy = CommandBuy {
+  commandBuyPlayer :: PlayerId,
+  commandBuyKind :: ResourceKind,
+  commandBuyAmount :: Int, -- in hundreds
+  commandBuyMarket :: ObjectId
+
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandBuy where
+  simpleGet = do
+    commandBuyPlayer <- fmap PlayerId getInt8Int
+    commandBuyKind <- getResourceKind
+    commandBuyAmount <- getInt8Int
+    commandBuyMarket <- getObjectId
+    pure CommandBuy{..}
+
+data CommandDropRelic = CommandDropRelic {
+  commandDropRelicMonkId :: ObjectId
+
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandDropRelic where
+  simpleGet = do
+    G.skip 3
+    commandDropRelicMonkId <- getObjectId
+    pure CommandDropRelic{..}
+
+data CommandTownBell = CommandTownBell {
+  commandTownBellTownCenter :: ObjectId,
+  commandTownBellActive :: Bool
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandTownBell where
+  simpleGet = do
+    G.skip 3
+    commandTownBellTownCenter <- getObjectId
+    commandTownBellActive <- getBool
+    G.skip 3
+    pure CommandTownBell{..}
+
+data CommandBackToWork = CommandBackToWork {
+  commandBackToWorkBuildingId :: ObjectId
+} deriving (Show, Eq, Ord)
+
+instance SimpleGet CommandBackToWork where
+  simpleGet = do
+    G.skip 3
+    commandBackToWorkBuildingId <- getObjectId
+    pure CommandBackToWork{..}
 
 {-
 rendering etc
@@ -379,6 +572,18 @@ commandToTypeText (CommandTypeWaypoint _) = "Waypoint"
 commandToTypeText (CommandTypeStop _) = "Stop"
 commandToTypeText (CommandTypeRally _) = "Rally"
 commandToTypeText (CommandTypeDelete _) = "Delete"
+commandToTypeText (CommandTypeResign _) = "Resign"
+commandToTypeText (CommandTypeAttackGround _) = "AttackGround"
+commandToTypeText (CommandTypeTribute _) = "Tribute"
+commandToTypeText (CommandTypeRepair _) = "Repair"
+commandToTypeText (CommandTypeUngarrison _) = "Ungarrison"
+commandToTypeText (CommandTypeToggleGate _) = "ToggleGate"
+commandToTypeText (CommandTypeGarrison _) = "Garrison"
+commandToTypeText (CommandTypeSell _) = "Sell"
+commandToTypeText (CommandTypeBuy _) = "Buy"
+commandToTypeText (CommandTypeDropRelic _) = "DropRelic"
+commandToTypeText (CommandTypeTownBell _) = "TownBell"
+commandToTypeText (CommandTypeBackToWork _) = "BackToWork"
 commandToTypeText (CommandUnparsed n _) = "Unparsed: " <> displayShowT n
 
 

@@ -281,64 +281,48 @@ linkBuildingsToCommands = do
         _ -> pure ()
     assignBasedOnBuildOrders :: Object -> Sim ()
     assignBasedOnBuildOrders o@Object{..} = do
-      case objectInfo of
-        ObjectInfoBuilding b -> do
-          preEvents <- findEventsRangeForObjectCreation objectId (fmap nonEmptySingle $ toObjectType o)
-          let buildEvents = filter (isNothing . eventBuildBuilding . extractEventBuild  ) $ IxSet.toList $ (IxSet.getEQ EventTypeWBuild) preEvents
-              restrictByPlayer =
-                case objectPlayer of
-                  Nothing -> buildEvents
-                  Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
-              restrictByType =
-                case toObjectType b of
-                  Nothing -> restrictByPlayer
-                  Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
+      let b = extractBuilding o
+      preEvents <- findEventsRangeForObjectCreation objectId (fmap nonEmptySingle $ toObjectType o)
+      let buildEvents = filter (isNothing . eventBuildBuilding . extractEventBuild  ) $ IxSet.toList $ (IxSet.getEQ EventTypeWBuild) preEvents
+          restrictByPlayer =
+            case objectPlayer of
+              Nothing -> buildEvents
+              Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
+          restrictByType =
+            case toObjectType b of
+              Nothing -> restrictByPlayer
+              Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
 
-          foundE <- case restrictByType of
-                     [] -> do
-                      traceShowM $ o
-                      mapM debugBuildEvent $ buildEvents
-                      traceM $ "Impossible - this building was never placed?"
-                      error ""
-                     [x] -> do
-                      pure $ Just x
-                     _xs -> do
-                      traceM $ "\n\n"
-                      traceShowM $ o
-                      mapM debugBuildEvent $ _xs
-                      error ""
-                      pure Nothing
+      foundE <- case restrictByType of
+         [] -> do
+          traceShowM $ o
+          void $ mapM debugBuildEvent $ buildEvents
+          error $ "Impossible - this building was never placed?"
+         [x] -> pure . Just $ x
+         _xs -> do
+          traceM $ "\n\n"
+          traceShowM $ o
+          void $ mapM debugBuildEvent $ _xs
+          pure Nothing
+          --error "multiple possible build events found"
 
+      case foundE of
+        Nothing -> do
+         -- we can't find the specific event, but maybe we can assign some info
+         let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible restrictByType
+             possibleTypes = L.nub $ map eventBuildBuildingObjectType restrictByType
 
+         o' <- case possiblePlayers of
+                 [p] -> updateObjectWithPlayerIfNone o p
+                 _ -> pure o
 
+         void $ case possibleTypes of
+           [ot] -> updateObject $ setObjectType o' ot
+           _ -> updateBuildingWithBuildingType o' (nonEmptyPartial possibleTypes)
 
-          case foundE of
-            Nothing -> do
-             -- we can't find the specific event, but maybe we can assign some info
-             let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible restrictByType
-                 possibleTypes = L.nub $ map eventBuildBuildingObjectType restrictByType
-             case (possiblePlayers, possibleTypes) of
-               ([p], [ot]) -> do
-                -- for now consume the earlier one though this might be an issue later!
-                --linkBuildingToEvent o $ L.Partial.head restrictByType
-                o' <- updateObjectWithPlayerIfNone o p
-                void $ updateObject $ setObjectType o' ot
-                --traceShowM $ o
-                --void $ mapM debugBuildEvent $ restrictByType
-               (ps, pts) -> do
-                 case ps of
-                  [p] -> void $ updateObjectWithPlayerIfNone o p
-                  _ -> do
-                    --traceShowM $ o
-                    --void $ mapM debugBuildEvent $ take 2 xs
-                    pure ()
-                 case pts of
-                  [ot] -> void $ updateObject $ setObjectType o ot
-                  _ -> void $  updateBuildingWithBuildingType o (nonEmptyPartial possibleTypes)
-            -- there is only one possible build event - we can link these together
-            Just e ->
-              linkBuildingToEvent o e
-        _ -> pure ()
+        Just e ->
+        -- there is only one possible build event - we can link these together
+          linkBuildingToEvent o e
 
     linkBuildingToEvent :: Object -> Event -> Sim ()
     linkBuildingToEvent o e = do
