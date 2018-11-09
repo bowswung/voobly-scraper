@@ -156,10 +156,15 @@ makeSimpleInferences = do
   unplayerEvents <- fmap (IxSet.getEQ (Nothing :: Maybe PlayerId)) $ getEventSet
   void $ mapM inferPlayerForEvent $ IxSet.toList unplayerEvents
 
+  allEvents <- fmap (IxSet.getGT (Nothing :: Maybe PlayerId)) $ getEventSet
+  void $ mapM inferPlayerForObjects $ IxSet.toList allEvents
+
+
   primaryEvents <- fmap (IxSet.getEQ EventTypeWPrimary) $ getEventSet
   void $ mapM inferDetailForEvent $ IxSet.toList primaryEvents
 
-
+  garrisonAndRepairEvents <- fmap (ixsetGetIn [EventTypeWRepair, EventTypeWGarrison, EventTypeWUngarrison]) $ getEventSet
+  void $ mapM inferPlayerEtcForRepairGarrison $ IxSet.toList garrisonAndRepairEvents
 
   pure ()
   where
@@ -171,6 +176,30 @@ makeSimpleInferences = do
         [] -> pure ()
         [x] -> void $ updateEvent e{eventPlayerResponsible = Just x}
         xs -> error $ "Multiple player owners for units in single event" ++ show xs
+
+    inferPlayerForObjects :: Event -> Sim ()
+    inferPlayerForObjects Event{..} = do
+      case eventPlayerResponsible of
+        Nothing -> pure ()
+        Just pid -> do
+          objs <- fmap catMaybes $  mapM lookupObject $ eventActingObjectsIdx e
+          void $ mapM ((flip updateObjectWithPlayerIfNone) pid) objs
+    inferPlayerEtcForRepairGarrison :: Event -> Sim ()
+    inferPlayerEtcForRepairGarrison Event{..} =
+      case eventType of
+        EventTypeRepair EventRepair{..} ->
+          o <- lookupObjectOrFail eventRepairRepaired
+          o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
+          updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+        EventTypeGarrison EventGarrison{..} ->
+          o <- lookupObjectOrFail eventGarrisonTargetId
+          o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
+          updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+        EventTypeGarrison EventUngarrison{..} ->
+          os <- mapM lookupObjectOrFail eventUngarrisonReleasedFrom
+          (flip mapM) os $ \o -> do
+            o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
+            updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
 
     inferUnitType :: Object -> Sim ()
     inferUnitType o = do
@@ -300,9 +329,9 @@ linkBuildingsToCommands = do
           error $ "Impossible - this building was never placed?"
          [x] -> pure . Just $ x
          _xs -> do
-          traceM $ "\n\n"
-          traceShowM $ o
-          void $ mapM debugBuildEvent $ _xs
+          --traceM $ "\n\n"
+          --traceShowM $ o
+          --void $ mapM debugBuildEvent $ _xs
           pure Nothing
           --error "multiple possible build events found"
 

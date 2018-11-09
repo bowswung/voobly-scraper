@@ -245,6 +245,9 @@ updateBuildingWithBuildingType o@Object{..} ts =
       updateObject $ o{objectInfo = ObjectInfoBuilding b{buildingType = restrictBuildingType buildingType ts}}
     _ -> pure o
 
+updateObjectWithMaybePlayerIfNone :: Object -> Maybe PlayerId -> Sim Object
+updateObjectWithMaybePlayerIfNone o Nothing = pure o
+updateObjectWithMaybePlayerIfNone o (Just pid) = updateObjectWithPlayerIfNone o pid
 
 updateObjectWithPlayerIfNone :: Object -> PlayerId -> Sim Object
 updateObjectWithPlayerIfNone o pid =
@@ -255,24 +258,28 @@ updateObjectWithPlayerIfNone o pid =
 
 
 updateObjAsTypeW :: Object -> ObjectTypeW -> Sim Object
-updateObjAsTypeW o w =
-  case objectTypeW o of
-    ObjectTypeWUnknown -> do
-      let oInfo = case w of
-            ObjectTypeWUnit -> ObjectInfoUnit $ Unit UnitTypeUnknown
-            ObjectTypeWBuilding -> ObjectInfoBuilding $ Building BuildingTypeUnknown Nothing Nothing
-            ObjectTypeWMapObject -> error "Can't use for the w resource"
-            ObjectTypeWUnknown -> objectInfo o
-          newO = o{objectInfo = oInfo}
-      updateObject newO
-    ow | ow == w -> pure o
-       | otherwise -> error $  "Could not coerce " ++ show o ++ " to " ++ show w
+updateObjAsTypeW o w = updateObjAsTypeWWithType o w Nothing
 
 
+updateObjAsTypeWWithType :: Object -> ObjectTypeW -> Maybe (NonEmpty ObjectType) -> Sim Object
+updateObjAsTypeWWithType o w mOt = do
+  objectAs <-
+    case objectTypeW o of
+        ObjectTypeWUnknown -> do
+          let oInfo = case w of
+                ObjectTypeWUnit -> ObjectInfoUnit $ Unit UnitTypeUnknown
+                ObjectTypeWBuilding -> ObjectInfoBuilding $ Building BuildingTypeUnknown Nothing Nothing
+                ObjectTypeWMapObject -> error "Can't use for the w resource"
+                ObjectTypeWUnknown -> objectInfo o
+          pure $ o{objectInfo = oInfo}
 
+        ow | ow == w -> pure o
+           | otherwise -> error $  "Could not coerce " ++ show o ++ " to " ++ show w
+  objectF <-
+    case mOt of
+      Nothing -> objectAs
+      Just ot -> setObjectType objectAs ot
+  updateObject objectF
 
 updateObjectAsKnownUnit :: Object -> ObjectType -> Sim Object
-updateObjectAsKnownUnit o@Object{..} ot = do
-  asU <- updateObjAsTypeW o ObjectTypeWUnit
-  updateObject $ setObjectType asU ot
-
+updateObjectAsKnownUnit o ot = updateObjAsTypeWWithType o ObjectTypeWUnit (singleNonEmpty ot)

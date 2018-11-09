@@ -108,6 +108,7 @@ data ObjectTypeW =
     ObjectTypeWUnit
   | ObjectTypeWBuilding
   | ObjectTypeWMapObject
+  | ObjectTypeWBuildingOrSiege
   | ObjectTypeWUnknown
   deriving (Show, Eq, Ord)
 

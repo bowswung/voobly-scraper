@@ -31,6 +31,9 @@ elemNonEmpty a ne = a `elem` NE.toList ne
 nonEmptySingle :: NonEmpty a -> a
 nonEmptySingle (a:|_) = a
 
+singleNonEmpty :: a -> NonEmpty a
+singleNonEmpty = (flip (:|) $ [])
+
 tryWhileNothing :: (Monad m) => [m (Maybe r)] -> m (Maybe r)
 tryWhileNothing [] = pure $ Nothing
 tryWhileNothing (x:xs) = do

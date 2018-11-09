@@ -44,6 +44,7 @@ objectTypeW o =
     ObjectInfoUnit _ -> ObjectTypeWUnit
     ObjectInfoBuilding _ -> ObjectTypeWBuilding
     ObjectInfoMapObject _ -> ObjectTypeWMapObject
+    ObjectInfoBuildingOrSiege _ -> ObjectTypeWBuildingOrSiege
     ObjectInfoUnknown _ -> ObjectTypeWUnknown
 
 
@@ -51,8 +52,8 @@ data ObjectInfo =
     ObjectInfoUnit Unit
   | ObjectInfoBuilding Building
   | ObjectInfoMapObject MapObject
-
-  | ObjectInfoUnknown (Maybe ObjectType)
+  | ObjectInfoBuildingOrSiege (Maybe (NonEmpty ObjectType))
+  | ObjectInfoUnknown (Maybe (NonEmpty ObjectType))
   deriving (Show, Eq, Ord)
 
 data Unit = Unit {
@@ -126,7 +127,7 @@ instance ToObjectId BuildingId where
 
 class HasObjectType a where
   toObjectType :: a -> Maybe (NonEmpty ObjectType)
-  setObjectType :: a -> ObjectType -> a
+  setObjectType :: a -> NonEmpty ObjectType -> a
 
 instance HasObjectType Object where
   toObjectType o =
