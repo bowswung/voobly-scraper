@@ -39,6 +39,8 @@ nonEmptyPartial (x:xs) = x :| xs
 elemNonEmpty :: Eq a => a -> NonEmpty a -> Bool
 elemNonEmpty a ne = a `elem` NE.toList ne
 
+nonEmptySingle :: NonEmpty a -> a
+nonEmptySingle (a:|_) = a
 
 
 newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord) -- object id from rec file - we don't know anything about it!
@@ -52,7 +54,7 @@ newtype ResourceId = ResourceId ObjectId deriving (Show, Eq, Ord)
 
 newtype PlayerId = PlayerId Int deriving (Show, Eq, Ord, Generic) -- 1,2 etc - same as the rec file
 instance Hashable PlayerId
-newtype EventId = EventId Int deriving (Show, Eq, Ord) -- sequence
+newtype EventId = EventId {eventIdToInt :: Int} deriving (Show, Eq, Ord) -- sequence
 
 isGaia :: PlayerId -> Bool
 isGaia (PlayerId 0) = True
@@ -615,10 +617,17 @@ newtype MapTileIndex = MapTileIndex (Int, Int) deriving (Eq, Ord, Show)
 
 
 newtype ReferencesObjectIdx = ReferencesObjectIdx ObjectId deriving (Eq, Ord, Show)
+newtype EventObjectIdAssignmentIdx = EventObjectIdAssignmentIdx ObjectId deriving (Eq, Ord, Show)
 newtype ObjectPlacedByGameIdx = ObjectPlacedByGameIdx Bool deriving (Eq, Ord, Show)
 
 eventReferencesObjectIdx :: Event -> [ReferencesObjectIdx]
 eventReferencesObjectIdx = map ReferencesObjectIdx . referencesObjectIds
+
+eventObjectIdAssignmentIdx :: Event -> [EventObjectIdAssignmentIdx]
+eventObjectIdAssignmentIdx Event{..} =
+  case eventType of
+    EventTypeBuild b -> map EventObjectIdAssignmentIdx $   catMaybes [fmap toObjectId $ eventBuildBuilding b]
+    _ -> []
 
 mapTileCombinedIdx :: MapTile -> MapTileIndex
 mapTileCombinedIdx MapTile{..} = MapTileIndex (mapTileX, mapTileY)
@@ -629,8 +638,9 @@ posToCombinedIdx Pos{..} = MapTileIndex (floor posX, floor posY)
 objectPlacedByGameIdx :: Object -> ObjectPlacedByGameIdx
 objectPlacedByGameIdx = ObjectPlacedByGameIdx . objectPlacedByGame
 
+
 makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'unitTypeIdx, 'buildingTypeIdx, 'objectPlacedByGameIdx]
-makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx]
+makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
 ixsetGetIn :: (Indexable ixs a, IsIndexOf ix ixs) => [ix] -> IxSet ixs a  -> IxSet ixs a
@@ -643,14 +653,22 @@ getEventSet :: Sim EventSet
 getEventSet = fmap (events . gameState) get
 
 
-findEventsBeforeObjectCreation :: ObjectId -> Sim EventSet
-findEventsBeforeObjectCreation oid = do
+findEventsRangeForObjectCreation :: ObjectId -> Maybe ObjectType -> Sim EventSet
+findEventsRangeForObjectCreation oid mOt  = do
   eSet <- getEventSet
-  let definitelyAfter = IxSet.getGT (ReferencesObjectIdx oid) eSet
+  let restrictPreviousEvents = mOt /= Just OT_TownCenter  -- town centers seem to be assigned an id when they are actually built?
+  let definitelyAfter = IxSet.getGTE (ReferencesObjectIdx oid) eSet
       firstEvent = headMaybe $ IxSet.toAscList (Proxy :: Proxy EventId) definitelyAfter
-  case firstEvent of
-    Nothing -> pure eSet
-    Just e -> pure $ IxSet.getLT (eventId e) eSet
+      definitelyBefore = IxSet.getLT (EventObjectIdAssignmentIdx oid) eSet
+      lastEvent = if restrictPreviousEvents then headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) definitelyBefore else Nothing
+  let finalSet =
+        case firstEvent of
+          Nothing -> eSet
+          Just e -> IxSet.getLT (eventId e) eSet
+  pure $
+    case lastEvent of
+      Nothing -> finalSet
+      Just e -> IxSet.getGT (eventId e) finalSet
 
 data GameState = GameState {
   objects :: ObjectSet,
@@ -921,7 +939,7 @@ linkBuildingsToCommands = do
     assignBasedOnBuildOrders o@Object{..} = do
       case objectInfo of
         ObjectInfoBuilding b -> do
-          preEvents <- findEventsBeforeObjectCreation objectId
+          preEvents <- findEventsRangeForObjectCreation objectId (fmap nonEmptySingle $ toObjectType o)
           let buildEvents = filter (isNothing . eventBuildBuilding . extractEventBuild  ) $ IxSet.toList $ (IxSet.getEQ EventTypeWBuild) preEvents
               restrictByPlayer =
                 case objectPlayer of
@@ -933,9 +951,17 @@ linkBuildingsToCommands = do
                   Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
 
           foundE <- case restrictByType of
-                     [] -> error "Impossible - this building was never placed?"
-                     [x] -> pure $ Just x
-                     _ -> pure Nothing
+                     [] -> do
+                      traceShowM $ o
+                      mapM debugBuildEvent $ buildEvents
+                      traceShowM $ "Impossible - this building was never placed?"
+                      error ""
+                     [x] -> do
+                      pure $ Just x
+                     _xs -> do
+                      traceShowM $ o
+                      mapM debugBuildEvent $ buildEvents
+                      pure Nothing
 
 
 
@@ -946,11 +972,13 @@ linkBuildingsToCommands = do
              let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible restrictByType
                  possibleTypes = L.nub $ map eventBuildBuildingObjectType restrictByType
              case (possiblePlayers, possibleTypes) of
-               ([_], [_]) -> do
+               ([p], [ot]) -> do
                 -- for now consume the earlier one though this might be an issue later!
-                linkBuildingToEvent o $ L.Partial.head restrictByType
-                traceShowM $ o
-                void $ mapM debugBuildEvent $ restrictByType
+                --linkBuildingToEvent o $ L.Partial.head restrictByType
+                o' <- assignPlayerToObject o p
+                void $ updateObject $ setObjectType o' ot
+                --traceShowM $ o
+                --void $ mapM debugBuildEvent $ restrictByType
                (ps, pts) -> do
                  case ps of
                   [p] -> void $ assignPlayerToObject o p
@@ -959,8 +987,8 @@ linkBuildingsToCommands = do
                     --void $ mapM debugBuildEvent $ take 2 xs
                     pure ()
                  case pts of
-                  [pt] -> do
-                    void $ updateObject $ setObjectType o pt
+                  [ot] -> do
+                    void $ updateObject $ setObjectType o ot
                   _ -> do
                     let oBuilding = extractBuilding o
                     case buildingType oBuilding of
@@ -970,7 +998,7 @@ linkBuildingsToCommands = do
                       BuildingTypeOneOf ne -> do
                         let newnon = L.intersect (NE.toList ne) pts
                         void $ updateObject $ o{objectInfo = ObjectInfoBuilding oBuilding{buildingType = BuildingTypeOneOf $ nonEmptyPartial newnon}}
-
+            -- there is only one possible build event - we can link these together
             Just e ->
               linkBuildingToEvent o e
         _ -> pure ()
@@ -994,6 +1022,7 @@ linkBuildingsToCommands = do
 
 assignPlayerToObject :: Object -> PlayerId -> Sim Object
 assignPlayerToObject o pid =
+
   case objectPlayer o of
     Nothing -> updateObject o{objectPlayer = Just pid}
     Just _ -> pure o
@@ -1343,10 +1372,11 @@ rPad ::  (F.Buildable.Buildable a) => Int -> a-> TL.Builder
 rPad i a = F.right i ' ' a
 
 renderEvent :: Event -> Sim  TL.Builder
-renderEvent Event{..} = do
+renderEvent e@Event{..} = do
   d <- detail
   p <- renderPlayer eventPlayerResponsible
-  pure $ simOrReal <> " " <> rPad 9 eventTick <> rPad 12 p <> d
+  let assignedIds = if (length $ eventObjectIdAssignmentIdx e) > 0 then " assignedIds" <> displayShowB (eventObjectIdAssignmentIdx e) else ""
+  pure $ simOrReal <> " " <> rPad 9 (eventIdToInt eventId) <> rPad 12 p <> d <> assignedIds
   where
 
     detail :: Sim  TL.Builder
@@ -1457,7 +1487,7 @@ renderObject oid = do
         then pure $ "a " <> t
         else do
           belong <- renderPlayer objectPlayer
-          pure $ "a " <> t <> " belonging to " <> belong
+          pure $ "a " <> t <> " (" <> (displayShowB . objectIdToInt $ objectId) <> ") " <> " belonging to " <> belong
 
 renderObjectType :: (ToObjectId a) => a -> Sim TL.Builder
 renderObjectType oid = do
@@ -1471,7 +1501,7 @@ renderObjectType oid = do
             ObjectInfoMapObject a -> renderMapObject a
             ObjectInfoUnknown t -> pure $ maybe "Unknown" (displayShowB) t
       p <- renderPlayer objectPlayer
-      pure $ p <> " " <> t -- <> "(" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
+      pure $ p <> " " <> t <> "(" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
 
 renderUnits :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderUnits = renderObjects
