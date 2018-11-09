@@ -4,11 +4,14 @@ module Data.Mgz.Constants (
   module Data.Mgz.Constants.Objects,
 )
   where
-import Data.Mgz.Constants.Techs
-import Data.Mgz.Constants.Objects
 import qualified RIO.HashMap as HM
 import RIO
 import qualified RIO.List as L
+
+import Data.List.NonEmpty(NonEmpty(..))
+import Data.Mgz.Constants.Techs
+import Data.Mgz.Constants.Objects
+import Data.Mgz.Utils
 
 buildingToTechMap :: HM.HashMap ObjectType [Tech]
 buildingToTechMap = HM.fromList [
@@ -49,8 +52,8 @@ buildingToTrainUnitMap = HM.fromList [
 trainUnitToBuildingMap ::  HM.HashMap ObjectType [ObjectType]
 trainUnitToBuildingMap = flipListHM buildingToTrainUnitMap
 
-attackingBuildingTypes :: [ObjectType]
-attackingBuildingTypes = [
+attackingBuildingTypes :: NonEmpty ObjectType
+attackingBuildingTypes = nonEmptyPartial [
     OT_TownCenter
   , OT_Castle
   , OT_WatchTower

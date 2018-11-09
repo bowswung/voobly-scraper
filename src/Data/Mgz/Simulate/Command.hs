@@ -7,157 +7,183 @@ import Data.Mgz.Simulate.Objects
 import Data.Mgz.Simulate.State
 import Data.Mgz.Simulate.Events
 
-addCommandAsEvent :: Command -> Sim ()
-addCommandAsEvent c@(CommandTypePrimary CommandPrimary{..}) = do
-  eType <-
+
+
+handleCommand :: Command -> Sim ()
+handleCommand c = do
+  mEt <- runCommand c
+  case mEt of
+    Nothing -> pure ()
+    Just et -> addRealEvent c (commandPlayerId c) et
+
+class RunCommand a where
+  runCommand :: a -> Sim (Maybe EventType)
+
+instance RunCommand Command where
+  runCommand (CommandTypePrimary c) = runCommand c
+  runCommand (CommandTypeMove c) = runCommand c
+  runCommand (CommandTypeStance c) = runCommand c
+  runCommand (CommandTypeGuard c) = runCommand c
+  runCommand (CommandTypeFollow c) = runCommand c
+  runCommand (CommandTypePatrol c) = runCommand c
+  runCommand (CommandTypeFormation c) = runCommand c
+  runCommand (CommandTypeResearch c) = runCommand c
+  runCommand (CommandTypeBuild c) = runCommand c
+  runCommand (CommandTypeTrain c) = runCommand c
+  runCommand (CommandTypeWaypoint c) = runCommand c
+  runCommand (CommandTypeStop c) = runCommand c
+  runCommand (CommandTypeRally c) = runCommand c
+  runCommand (CommandTypeDelete c) = runCommand c
+  runCommand (CommandUnparsed _ _) = pure Nothing
+  runCommand (CommandTypeWall _) = pure Nothing
+
+commandPlayerId :: Command -> Maybe PlayerId
+commandPlayerId (CommandTypePrimary CommandPrimary{..}) = Just commandPrimaryPlayerId
+commandPlayerId (CommandTypeMove CommandMove{..}) = Just commandMovePlayerId
+commandPlayerId (CommandTypeFormation CommandFormation{..}) = Just commandFormationPlayerId
+commandPlayerId (CommandTypeResearch CommandResearch{..}) = Just commandResearchPlayerId
+commandPlayerId (CommandTypeBuild CommandBuild{..}) = Just commandBuildPlayerId
+commandPlayerId (CommandTypeWall CommandWall{..}) = Just commandWallPlayerId
+commandPlayerId (CommandTypeWaypoint CommandWaypoint{..}) = Just commandWaypointPlayerId
+commandPlayerId (CommandTypeDelete CommandDelete{..}) = Just commandDeletePlayerId
+commandPlayerId _ = Nothing
+
+instance RunCommand CommandPrimary where
+  runCommand CommandPrimary{..} = do
     case commandPrimaryTargetId of
       Just tid -> do
         target <- getObject tid
         uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
         objs <- getObjectsForPlayer uids commandPrimaryPlayerId
-        pure $ EventTypePrimary $ EventPrimary {
+        pure . Just . EventTypePrimary $ EventPrimary {
             eventPrimaryObjects = map objectId objs
           , eventPrimaryTarget = objectId target
           , eventPrimaryPos = commandPrimaryPos
           }
       Nothing -> do
-          uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
-          units <- getUnitsForPlayer uids commandPrimaryPlayerId
-          pure . EventTypeMove $ EventMove {
-              eventMoveUnits = map unitId units
+        uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
+        units <- getUnitsForPlayer uids commandPrimaryPlayerId
+        pure . Just. EventTypeMove $ EventMove {
+            eventMoveUnits = map unitId units
             , eventMovePos = commandPrimaryPos
-            }
-  addRealEvent c (Just commandPrimaryPlayerId) eType
+          }
 
-addCommandAsEvent c@(CommandTypeMove CommandMove{..}) = do
-  uids <- getSelectedObjectIds commandMoveUnitIds commandMovePlayerId
-  units <- getUnitsForPlayer uids commandMovePlayerId
-  let eType = EventTypeMove $ EventMove {
-      eventMoveUnits = map unitId units
-    , eventMovePos = commandMovePos
-    }
-  addRealEvent c (Just commandMovePlayerId) eType
+instance RunCommand CommandMove where
+  runCommand CommandMove{..} = do
+    uids <- getSelectedObjectIds commandMoveUnitIds commandMovePlayerId
+    units <- getUnitsForPlayer uids commandMovePlayerId
+    pure . Just $ EventTypeMove $ EventMove {
+        eventMoveUnits = map unitId units
+      , eventMovePos = commandMovePos
+      }
 
-addCommandAsEvent c@(CommandTypeStance CommandStance{..}) = do
-  units <- mapM getUnit commandStanceUnitIds
-  let eType = EventTypeMilitaryDisposition $ EventMilitaryDisposition {
-      eventMilitaryDispositionUnits = map unitId units
-    , eventMilitaryDispositionType = MilitaryDispositionStance commandStanceStance
-    }
-  addRealEvent c Nothing eType
+instance RunCommand CommandStance where
+  runCommand CommandStance{..} = do
+    units <- mapM getUnit commandStanceUnitIds
+    pure . Just $ EventTypeMilitaryDisposition $ EventMilitaryDisposition {
+        eventMilitaryDispositionUnits = map unitId units
+      , eventMilitaryDispositionType = MilitaryDispositionStance commandStanceStance
+      }
+instance RunCommand CommandFormation where
+  runCommand CommandFormation{..} = do
+    units <- getUnitsForPlayer commandFormationUnitIds commandFormationPlayerId
+    pure . Just $  EventTypeMilitaryDisposition $ EventMilitaryDisposition {
+        eventMilitaryDispositionUnits = map unitId units
+      , eventMilitaryDispositionType = MilitaryDispositionFormation commandFormationFormation
+      }
+instance RunCommand CommandGuard where
+  runCommand CommandGuard{..} = do
+    target <- getObject commandGuardGuarded
+    units <- mapM getUnit commandGuardUnitIds
 
-addCommandAsEvent c@(CommandTypeFormation CommandFormation{..}) = do
-  units <- getUnitsForPlayer commandFormationUnitIds commandFormationPlayerId
+    pure . Just $ EventTypeTargetedMilitaryOrder $ EventTargetedMilitaryOrder {
+        eventTargetedMilitaryOrderUnits = map unitId units
+      , eventTargetedMilitaryOrderType = TargetedMilitaryOrderGuard
+      , eventTargetedMilitaryOrderTarget = objectId target
+      }
+instance RunCommand CommandFollow where
+  runCommand CommandFollow{..} = do
+    target <- getObject commandFollowFollowed
+    units <- mapM getUnit commandFollowUnitIds
 
-  let eType = EventTypeMilitaryDisposition $ EventMilitaryDisposition {
-      eventMilitaryDispositionUnits = map unitId units
-    , eventMilitaryDispositionType = MilitaryDispositionFormation commandFormationFormation
-    }
-  addRealEvent c (Just commandFormationPlayerId) eType
+    pure . Just $ EventTypeTargetedMilitaryOrder $ EventTargetedMilitaryOrder {
+        eventTargetedMilitaryOrderUnits = map unitId units
+      , eventTargetedMilitaryOrderType = TargetedMilitaryOrderFollow
+      , eventTargetedMilitaryOrderTarget = objectId target
+      }
+instance RunCommand CommandPatrol where
+  runCommand CommandPatrol{..} = do
+    units <- mapM getUnit commandPatrolUnitIds
 
-addCommandAsEvent c@(CommandTypeGuard CommandGuard{..}) = do
-  target <- getObject commandGuardGuarded
-  units <- mapM getUnit commandGuardUnitIds
+    pure . Just $ EventTypePatrol $ EventPatrol {
+        eventPatrolUnits = map unitId units
+      , eventPatrolWaypoints = commandPatrolWaypoints
+      }
+instance RunCommand CommandBuild where
+  runCommand CommandBuild{..} = do
+    units <- getUnitsForPlayer commandBuildBuilders commandBuildPlayerId
 
-  let eType = EventTypeTargetedMilitaryOrder $ EventTargetedMilitaryOrder {
-      eventTargetedMilitaryOrderUnits = map unitId units
-    , eventTargetedMilitaryOrderType = TargetedMilitaryOrderGuard
-    , eventTargetedMilitaryOrderTarget = objectId target
-    }
-  addRealEvent c Nothing eType
+    pure . Just $ EventTypeBuild $ EventBuild {
+        eventBuildBuilders = map unitId units
+      , eventBuildPos = commandBuildPos
+      , eventBuildingType = BuildingTypeKnown commandBuildBuildingType
+      , eventBuildBuilding = Nothing
+      }
+instance RunCommand CommandResearch where
+  runCommand CommandResearch{..} = do
+    building <- getBuildingForPlayer commandResearchBuildingId commandResearchPlayerId
 
-addCommandAsEvent c@(CommandTypeFollow CommandFollow{..}) = do
-  target <- getObject commandFollowFollowed
-  units <- mapM getUnit commandFollowUnitIds
+    pure . Just $ EventTypeResearch $ EventResearch {
+        eventResearchBuilding = buildingId building
+      , eventResearchTech = normalizeTech commandResearchResearch
+      }
+instance RunCommand CommandTrain where
+  runCommand CommandTrain{..} = do
+    building <- getBuilding commandTrainBuildingId
+    pure . Just $ EventTypeTrain $ EventTrain {
+        eventTrainBuilding = buildingId building
+      , eventTrainType = objectTypeToUnitType $ commandTrainUnitType
+      , eventTrainNumber = commandTrainNumber
+      }
+instance RunCommand CommandStop where
+  runCommand CommandStop{..} = do
+    objs <- mapM getObject commandStopSelectedIds
 
-  let eType = EventTypeTargetedMilitaryOrder $ EventTargetedMilitaryOrder {
-      eventTargetedMilitaryOrderUnits = map unitId units
-    , eventTargetedMilitaryOrderType = TargetedMilitaryOrderFollow
-    , eventTargetedMilitaryOrderTarget = objectId target
-    }
-  addRealEvent c Nothing eType
+    pure . Just $ EventTypeStopGeneral $ EventStopGeneral {
+        eventStopSelectedIds = map objectId objs
+      }
+instance RunCommand CommandWaypoint where
+  runCommand CommandWaypoint{..} = do
+    uids <- getSelectedObjectIds commandWaypointSelectedIds commandWaypointPlayerId
+    objs <- getObjectsForPlayer uids commandWaypointPlayerId
+    pure . Just $ EventTypeWaypoint $ EventWaypoint {
+        eventWaypointSelectedObjects = map objectId objs,
+        eventWaypointPos = commandWaypointPos
+      }
+instance RunCommand CommandRally where
+  runCommand CommandRally{..} = do
+    targetObj <-
+      case (commandRallyTargetObject, commandRallyTargetType) of
+        (Nothing, Nothing) -> pure Nothing
+        (Just o, Just t) -> fmap Just $ getObjectAsType o t
+        (a, b) -> error $ "Rally command with inconsistent targets " ++ show (a,b)
 
-addCommandAsEvent c@(CommandTypePatrol CommandPatrol{..}) = do
+    buildings <- mapM getBuilding commandRallySelectedBuildingIds
 
-  units <- mapM getUnit commandPatrolUnitIds
+    pure . Just $ EventTypeRally $ EventRally {
+        eventRallyTargetObject = fmap objectId targetObj,
+        eventRallyPos = commandRallyPos,
+        eventRallyBuildings = map buildingId buildings
+      }
+instance RunCommand CommandDelete where
+  runCommand CommandDelete{..} = do
+    target <- getObjectForPlayer commandDeleteObjectId (Just commandDeletePlayerId)
 
-  let eType = EventTypePatrol $ EventPatrol {
-      eventPatrolUnits = map unitId units
-    , eventPatrolWaypoints = commandPatrolWaypoints
-    }
-  addRealEvent c Nothing eType
-
-addCommandAsEvent c@(CommandTypeBuild CommandBuild{..}) = do
-  units <- getUnitsForPlayer commandBuildBuilders commandBuildPlayerId
-
-  let eType = EventTypeBuild $ EventBuild {
-      eventBuildBuilders = map unitId units
-    , eventBuildPos = commandBuildPos
-    , eventBuildingType = getBuildingType commandBuildBuildingType
-    , eventBuildBuilding = Nothing
-    }
-  addRealEvent c (Just commandBuildPlayerId) eType
-
-
-addCommandAsEvent c@(CommandTypeResearch CommandResearch{..}) = do
-  building <- getBuildingForPlayer commandResearchBuildingId commandResearchPlayerId
-
-  let eType = EventTypeResearch $ EventResearch {
-      eventResearchBuilding = buildingId building
-    , eventResearchTech = normalizeTech commandResearchResearch
-    }
-  addRealEvent c (Just commandResearchPlayerId) eType
-
-addCommandAsEvent c@(CommandTypeTrain CommandTrain{..}) = do
-  building <- getBuilding commandTrainBuildingId
-  let eType = EventTypeTrain $ EventTrain {
-      eventTrainBuilding = buildingId building
-    , eventTrainType = objectTypeToUnitType $ normaliseObjectType commandTrainUnitType
-    , eventTrainNumber = commandTrainNumber
-    }
-  addRealEvent c Nothing eType
+    pure . Just $ EventTypeDelete $ EventDelete {
+        eventDeleteObjectId = objectId target
+      }
 
 
-addCommandAsEvent c@(CommandTypeStop CommandStop{..}) = do
-  objs <- mapM getObject commandStopSelectedIds
 
-  let eType = EventTypeStopGeneral $ EventStopGeneral {
-      eventStopSelectedIds = map objectId objs
-    }
-  addRealEvent c Nothing eType
 
-addCommandAsEvent c@(CommandTypeWaypoint CommandWaypoint{..}) = do
-  uids <- getSelectedObjectIds commandWaypointSelectedIds commandWaypointPlayerId
-  objs <- getObjectsForPlayer uids commandWaypointPlayerId
-  let eType = EventTypeWaypoint $ EventWaypoint {
-      eventWaypointSelectedObjects = map objectId objs,
-      eventWaypointPos = commandWaypointPos
-    }
-  addRealEvent c (Just commandWaypointPlayerId) eType
 
-addCommandAsEvent c@(CommandTypeRally CommandRally{..}) = do
-  targetObj <-
-    case (commandRallyTargetObject, commandRallyTargetType) of
-      (Nothing, Nothing) -> pure Nothing
-      (Just o, Just t) -> fmap Just $ getObjectAsType o t
-      (a, b) -> error $ "Rally command with inconsistent targets " ++ show (a,b)
-
-  buildings <- mapM getBuilding commandRallySelectedBuildingIds
-
-  let eType = EventTypeRally $ EventRally {
-      eventRallyTargetObject = fmap objectId targetObj,
-      eventRallyPos = commandRallyPos,
-      eventRallyBuildings = map buildingId buildings
-    }
-  addRealEvent c Nothing eType
-
-addCommandAsEvent c@(CommandTypeDelete CommandDelete{..}) = do
-  target <- getObjectForPlayer commandDeleteObjectId (Just commandDeletePlayerId)
-
-  let eType = EventTypeDelete $ EventDelete {
-      eventDeleteObjectId = objectId target
-    }
-  addRealEvent c (Just commandDeletePlayerId) eType
-
-addCommandAsEvent (CommandTypeWall _) = pure ()
-addCommandAsEvent (CommandUnparsed _ _) = pure ()

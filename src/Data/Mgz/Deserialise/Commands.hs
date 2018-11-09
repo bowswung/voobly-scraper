@@ -154,7 +154,7 @@ instance SimpleGet CommandStance where
 
 
 data CommandGuard = CommandGuard {
-  commandGuardGuarded :: Int
+  commandGuardGuarded :: ObjectId
 , commandGuardUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
@@ -165,12 +165,12 @@ instance SimpleGet CommandGuard where
   simpleGet = do
     selectCount <- parseInt8
     G.skip 2
-    commandGuardGuarded <- parseInt32
+    commandGuardGuarded <- fmap ObjectId parseInt32
     commandGuardUnitIds <- getSelectedUnits selectCount
     pure CommandGuard{..}
 
 data CommandFollow = CommandFollow {
-  commandFollowFollowed :: Int
+  commandFollowFollowed :: ObjectId
 , commandFollowUnitIds :: [ObjectId]
 } deriving (Show, Eq, Ord)
 
@@ -180,7 +180,7 @@ instance SimpleGet CommandFollow where
   simpleGet = do
     selectCount <- parseInt8
     G.skip 2
-    commandFollowFollowed <- parseInt32
+    commandFollowFollowed <-  fmap ObjectId parseInt32
     commandFollowUnitIds <- getSelectedUnits selectCount
     pure CommandFollow{..}
 

@@ -12,6 +12,7 @@ import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
 import Data.Proxy(Proxy(..))
 import qualified RIO.HashMap as HM
+import Data.List.NonEmpty(NonEmpty(..))
 
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
@@ -70,8 +71,13 @@ data GameState = GameState {
   playerInfos :: HM.HashMap PlayerId PlayerInfo
 } deriving Show
 
+emptyGameState :: Header -> GameState
+emptyGameState h =
+  let initialMap = IxSet.fromList $ map (\t -> MapTile (tilePositionX t) (tilePositionY t) []) (headerTiles h)
+  in GameState IxSet.empty IxSet.empty initialMap (HM.fromList $ map (\i -> (playerInfoPlayerId i, i)) (headerPlayers h))
+
 type Ticks = Int
-type LastUsedIds = HM.HashMap Int [Int]
+type LastUsedIds = HM.HashMap PlayerId [ObjectId]
 data SimState = SimState {
   ticks :: Ticks,
   gameState :: GameState,
@@ -80,7 +86,7 @@ data SimState = SimState {
 
 type Sim a = State SimState a
 
-getSelectedObjectIds :: EitherInheritOrIds -> Int -> Sim [Int]
+getSelectedObjectIds :: EitherInheritOrIds -> PlayerId -> Sim [ObjectId]
 getSelectedObjectIds (Left ()) pId = do
   m <- fmap lastUsedIds $ get
   case HM.lookup pId m of
@@ -94,33 +100,76 @@ getObjectSet = fmap (objects . gameState) get
 getEventSet :: Sim EventSet
 getEventSet = fmap (events . gameState) get
 
-getUnitsForPlayer :: [Int] -> Int -> Sim [ObjectUnit]
+getUnitsForPlayer :: [ObjectId] -> PlayerId -> Sim [ObjectUnit]
 getUnitsForPlayer us i = mapM ((flip getUnitForPlayer) i) us
 
-getObjectsForPlayer :: [Int] -> Int -> Sim [Object]
+getObjectsForPlayer :: [ObjectId] -> PlayerId -> Sim [Object]
 getObjectsForPlayer us i = mapM ((flip getObjectForPlayer) (Just i)) us
 
 
-getUnit :: Int -> Sim ObjectUnit
+getUnit :: ObjectId -> Sim ObjectUnit
 getUnit i = do
   o <- getObject i
-  fmap asUnit $ convertObj o ObjectTypeWUnit
+  fmap asUnit $ updateObjAsTypeW o ObjectTypeWUnit
 
-getUnitForPlayer :: Int -> Int -> Sim ObjectUnit
+getUnitForPlayer :: ObjectId -> PlayerId -> Sim ObjectUnit
 getUnitForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
-  fmap asUnit $ convertObj o ObjectTypeWUnit
+  fmap asUnit $ updateObjAsTypeW o ObjectTypeWUnit
 
 
-getBuilding :: Int -> Sim ObjectBuilding
+
+getObjectAsType :: ObjectId -> ObjectType -> Sim Object
+getObjectAsType i t = do
+  o <- getObjectForPlayer i Nothing
+  case toObjectType o of
+    Nothing -> updateObject $ setObjectType o t
+    Just ots ->
+      if t `elemNonEmpty` ots
+        then
+          if NE.length ots == 1
+            then pure o
+            else updateObject $ setObjectType o t
+        else error $ "Mismatch in object types"
+
+
+getObject :: ObjectId -> Sim Object
+getObject i = getObjectForPlayer i Nothing
+
+getObjectForPlayer :: ObjectId -> Maybe PlayerId -> Sim Object
+getObjectForPlayer i mpId = do
+  when (i < ObjectId 1) $ error "GOT AN OBJECT ID < 1"
+  mO <- lookupObject i
+  case mO of
+    Just o ->
+      case mpId of
+        Nothing -> pure o
+        Just pId -> do
+          case objectPlayer o of
+            Nothing -> updateObject o{objectPlayer = Just pId}
+            Just pId' | pId' == pId -> pure o
+                      | pId' == PlayerId 0 -> updateObject o{objectPlayer = Just pId} -- stealing from gaia
+                      | otherwise -> error "PlayerId CHANGED - stolen sheep or conversion? "
+
+    Nothing -> do
+      let o = Object {
+                objectId = i
+              , objectPlayer = mpId
+              , objectInfo = ObjectInfoUnknown Nothing
+              , objectPlacedByGame = False
+              }
+      updateObject o
+
+
+getBuilding :: ObjectId -> Sim ObjectBuilding
 getBuilding i = do
   o <- getObject i
-  fmap asBuilding $ convertObj o ObjectTypeWBuilding
+  fmap asBuilding $ updateObjAsTypeW o ObjectTypeWBuilding
 
-getBuildingForPlayer :: Int -> Int -> Sim ObjectBuilding
+getBuildingForPlayer :: ObjectId -> PlayerId -> Sim ObjectBuilding
 getBuildingForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
-  fmap asBuilding $ convertObj o ObjectTypeWBuilding
+  fmap asBuilding $ updateObjAsTypeW o ObjectTypeWBuilding
 
 lookupObject :: (ToObjectId a ) => a -> Sim (Maybe Object)
 lookupObject i = do
@@ -143,14 +192,14 @@ updateObject o = do
   pure o
 
 
-addRealEvent :: Command -> Maybe Int -> EventType -> Sim ()
+addRealEvent :: Command -> Maybe PlayerId -> EventType -> Sim ()
 addRealEvent c mP et = modify' $ \ss ->
   let gs = gameState ss
       e = Event {
             eventId = EventId $ IxSet.size (events gs) + 1
           , eventTick = ticks ss
           , eventKind = EventKindReal c
-          , eventPlayerResponsible = fmap PlayerId mP
+          , eventPlayerResponsible = mP
           , eventType = et
           }
   in ss{gameState = gs{events = IxSet.insert e (events gs)}}
@@ -187,65 +236,24 @@ findEventsRangeForObjectCreation oid mOt  = do
 
 
 
+updateBuildingWithBuildingType :: Object -> NonEmpty ObjectType -> Sim Object
+updateBuildingWithBuildingType o@Object{..} ts =
+  case objectInfo of
+    ObjectInfoBuilding b@Building{..} ->
+      updateObject $ o{objectInfo = ObjectInfoBuilding b{buildingType = restrictBuildingType buildingType ts}}
+    _ -> pure o
 
 
-getObjectAsType :: Int -> Int -> Sim Object
-getObjectAsType i ti = do
-  o <- getObjectForPlayer i Nothing
-  let t = normaliseObjectType ti
-  case toObjectType o of
-    Nothing -> updateObject $ setObjectType o t
-    Just ots ->
-      if t `elemNonEmpty` ots
-        then
-          if NE.length ots == 1
-            then pure o
-            else updateObject $ setObjectType o t
-        else error $ "Mismatch in object types"
-
-
-getObject :: Int -> Sim Object
-getObject i = getObjectForPlayer i Nothing
-
-getObjectForPlayer :: Int -> Maybe Int -> Sim Object
-getObjectForPlayer i mpId = do
-  when (i < 1) $ error "GOT AN OBJECT ID < 1"
-  mO <- lookupObject (ObjectId i)
-  case mO of
-    Just o ->
-      case mpId of
-        Nothing -> pure o
-        Just p -> do
-          let pId = PlayerId p
-          case objectPlayer o of
-            Nothing -> updateObject o{objectPlayer = Just pId}
-            Just pId' | pId' == pId -> pure o
-                      | pId' == PlayerId 0 -> updateObject o{objectPlayer = Just pId} -- stealing from gaia
-                      | otherwise -> error "PlayerId CHANGED - stolen sheep or conversion? "
-
-    Nothing -> do
-      let o = Object {
-                objectId = ObjectId i
-              , objectPlayer = fmap PlayerId mpId
-              , objectInfo = ObjectInfoUnknown Nothing
-              , objectPlacedByGame = False
-              }
-      updateObject o
+updateObjectWithPlayerIfNone :: Object -> PlayerId -> Sim Object
+updateObjectWithPlayerIfNone o pid =
+  case objectPlayer o of
+    Nothing -> updateObject o{objectPlayer = Just pid}
+    Just _ -> pure o
 
 
 
-
-
-
-
-
-
-
-{-REFACTOR THESE-}
-
-
-convertObj :: Object -> ObjectTypeW -> Sim Object
-convertObj o w =
+updateObjAsTypeW :: Object -> ObjectTypeW -> Sim Object
+updateObjAsTypeW o w =
   case objectTypeW o of
     ObjectTypeWUnknown -> do
       let oInfo = case w of
@@ -258,22 +266,11 @@ convertObj o w =
     ow | ow == w -> pure o
        | otherwise -> error $  "Could not coerce " ++ show o ++ " to " ++ show w
 
-assignPlayerToObject :: Object -> PlayerId -> Sim Object
-assignPlayerToObject o pid =
-  case objectPlayer o of
-    Nothing -> updateObject o{objectPlayer = Just pid}
-    Just _ -> pure o
 
 
-convertObjectToKnownUnit :: Object -> ObjectType -> Sim Object
-convertObjectToKnownUnit o@Object{..} ot = do
-  asU <- convertObj o ObjectTypeWUnit
 
+updateObjectAsKnownUnit :: Object -> ObjectType -> Sim Object
+updateObjectAsKnownUnit o@Object{..} ot = do
+  asU <- updateObjAsTypeW o ObjectTypeWUnit
   updateObject $ setObjectType asU ot
 
-convertObjectToAttackingBuildingType :: Object -> Sim Object
-convertObjectToAttackingBuildingType o@Object{..} =
-  case objectInfo of
-    ObjectInfoBuilding b@Building{..} ->
-      updateObject $ o{objectInfo = ObjectInfoBuilding b{buildingType = assignAttackingBuildingType buildingType}}
-    _ -> pure o

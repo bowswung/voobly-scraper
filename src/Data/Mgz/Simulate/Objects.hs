@@ -174,8 +174,7 @@ objectTypeFromBuildingType BuildingTypeUnknown = Nothing
 objectTypeFromBuildingType (BuildingTypeKnown m) = NE.nonEmpty [m]
 objectTypeFromBuildingType (BuildingTypeOneOf o) = pure o
 
-getBuildingType :: Int -> BuildingType
-getBuildingType i = BuildingTypeKnown $ normaliseObjectType i
+
 
 
 objectTypeToUnitType :: ObjectType -> UnitType
@@ -287,17 +286,19 @@ isObjectPrimaryActableByPlayerMilitary mp Object{..} =
     _ -> True -- monks can target own units
 
 
-assignAttackingBuildingType :: BuildingType -> BuildingType
-assignAttackingBuildingType BuildingTypeUnknown = BuildingTypeOneOf $ nonEmptyPartial attackingBuildingTypes
-assignAttackingBuildingType (BuildingTypeOneOf a) =
-  case filter (\t -> t `elem` attackingBuildingTypes) $ NE.toList a of
-    [] -> error $ "Expected to find at least one attacking building type in " ++ show a
+restrictBuildingType :: BuildingType -> NonEmpty ObjectType -> BuildingType
+restrictBuildingType BuildingTypeUnknown new = BuildingTypeOneOf $ new
+restrictBuildingType (BuildingTypeOneOf old) new =
+  case filter (\t -> t `elemNonEmpty` new) $ NE.toList old of
+    [] -> error $ "Expected to find at least one matching building type in " ++ show old ++ " when restricting to " ++ show new
     [x] -> BuildingTypeKnown x
     xs -> BuildingTypeOneOf $ nonEmptyPartial xs
-assignAttackingBuildingType (BuildingTypeKnown t) =
-  case t `elem` attackingBuildingTypes of
+restrictBuildingType (BuildingTypeKnown t) new =
+  case t `elemNonEmpty` new of
     True -> BuildingTypeKnown t
-    False -> error $ "Expected known building to be an attacking building but it was a " ++ show t
+    False -> error $ "Expected known building to match " ++ show new ++ " but it was a " ++ show t
+
+
 
 
 isGaia :: PlayerId -> Bool

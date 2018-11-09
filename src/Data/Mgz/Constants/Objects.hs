@@ -602,7 +602,7 @@ data ObjectType =
  | OT_EliteKarambit
  | OT_Karambit
  | OT_Unknown Int
- | OT_ExtraneousPart
+ | OT_ExtraneousPart ObjectType
  deriving (Show, Eq, Ord, Generic)
 instance Hashable ObjectType
 
@@ -1476,5 +1476,4 @@ normaliseObjectType 823 = OT_Arambai
 normaliseObjectType 830 = OT_EliteKarambit
 normaliseObjectType 836 = OT_Karambit
 normaliseObjectType 891 = OT_EliteBallistaElephant
-normaliseObjectType 999999 = OT_ExtraneousPart
 normaliseObjectType n = OT_Unknown n

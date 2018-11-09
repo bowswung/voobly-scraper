@@ -41,8 +41,8 @@ simulate RecInfo{..} = do
   logInfo "Start simulating"
   logInfo "Recreating initial game state"
 
-  let initialMap = IxSet.fromList $ map (\t -> MapTile (tilePositionX t) (tilePositionY t) []) (headerTiles recInfoHeader)
-      s0 = GameState IxSet.empty IxSet.empty initialMap (HM.fromList $ map (\i -> (PlayerId $ playerInfoNumber i, i)) (headerPlayers recInfoHeader))
+  let
+      s0 = emptyGameState recInfoHeader
       s1 = gameState $ execState (initialiseGameState recInfoHeader) (SimState 0 s0 HM.empty)
 
   logInfo "Building base events"
@@ -71,31 +71,30 @@ initialiseGameState h = do
       reclassifyExtraneousObjectParts [] = []
       reclassifyExtraneousObjectParts [x] = [x]
       reclassifyExtraneousObjectParts ((!x):(!xs)) =
-        let (toRe, rest) = L.splitAt (objectPartsNumber (normaliseObjectType $ objectRawUnitId x) - 1) xs
-        in x : (map (\o -> o{objectRawUnitId = 999999}) toRe) ++ rest
+        let (toRe, rest) = L.splitAt (objectPartsNumber (objectRawUnitId x) - 1) xs
+        in x : (map (\o -> o{objectRawUnitId = OT_ExtraneousPart (objectRawUnitId o)}) toRe) ++ rest
 
 
 buildBasicEvents :: Op -> Sim ()
 buildBasicEvents (OpTypeSync OpSync{..}) = modify' (\ss -> ss{ticks = ticks ss + opSyncTime})
-buildBasicEvents (OpTypeCommand cmd) = addCommandAsEvent cmd
+buildBasicEvents (OpTypeCommand cmd) = handleCommand cmd
 buildBasicEvents _ = pure ()
 
 
 -- at the moment we aren't placing wolves etc but we should!
 handlePlayerObject :: ObjectRaw -> Sim ()
 handlePlayerObject oRaw@ObjectRaw{..} = do
-  let noType = normaliseObjectType objectRawUnitId
   case objectRawType of
     -- units
     70 -> do
-      when (isResourceOrRelic noType) $ do
-        let mObject = MapObject noType (PlayerId objectRawOwner) oRaw
+      when (isResourceOrRelic objectRawUnitId) $ do
+        let mObject = MapObject objectRawUnitId (objectRawOwner) oRaw
         placeMapObject mObject objectRawPos
       let o = Object {
-                  objectId = ObjectId objectRawObjectId
-                , objectPlayer =  Just . PlayerId $ objectRawOwner
+                  objectId = objectRawObjectId
+                , objectPlayer =  Just $ objectRawOwner
                 , objectInfo = ObjectInfoUnit $ Unit {
-                            unitType = objectTypeToUnitType noType
+                            unitType = objectTypeToUnitType objectRawUnitId
                           }
                 , objectPlacedByGame = True
                          }
@@ -103,10 +102,10 @@ handlePlayerObject oRaw@ObjectRaw{..} = do
 
     80 -> do
       let o = Object {
-                  objectId = ObjectId objectRawObjectId
-                , objectPlayer = Just . PlayerId $ objectRawOwner
+                  objectId = objectRawObjectId
+                , objectPlayer = Just $ objectRawOwner
                 , objectInfo = ObjectInfoBuilding $ Building {
-                            buildingType = BuildingTypeKnown noType,
+                            buildingType = BuildingTypeKnown objectRawUnitId,
                             buildingPos = Just (objectRawPos),
                             buildingPlaceEvent = Nothing
                           }
@@ -114,11 +113,11 @@ handlePlayerObject oRaw@ObjectRaw{..} = do
                          }
       void $ updateObject o
     _ -> do
-      let mObject = MapObject noType (PlayerId objectRawOwner) oRaw
-      when (HM.member  noType objectTypeToResourceKindMap ) $ placeMapObject mObject objectRawPos
+      let mObject = MapObject objectRawUnitId (objectRawOwner) oRaw
+      when (HM.member  objectRawUnitId objectTypeToResourceKindMap ) $ placeMapObject mObject objectRawPos
       let o = Object {
-                  objectId = ObjectId objectRawObjectId
-                , objectPlayer = Just . PlayerId $ objectRawOwner
+                  objectId = objectRawObjectId
+                , objectPlayer = Just  $ objectRawOwner
                 , objectInfo = ObjectInfoMapObject $ mObject
                 , objectPlacedByGame = True
                 }
@@ -237,7 +236,7 @@ makeSimpleInferences = do
     construeAsAttack pId t actors p =
       if isObjectEnemy pId t
         then do
-         void $ mapM convertObjectToAttackingBuildingType actors
+         void $ mapM ((flip updateBuildingWithBuildingType) attackingBuildingTypes) actors
          pure . Just $ EventTypeAttack EventAttack{
                 eventAttackAttackers =  map objectId actors
               , eventAttackTargetId = objectId t
@@ -248,7 +247,7 @@ makeSimpleInferences = do
     construeAsRelicGather _pId t actors p =
       if doesObjectMatch t isRelic -- the only people who can primary relics are monks
         then do
-         actors' <- mapM ((flip convertObjectToKnownUnit) OT_Monk) actors
+         actors' <- mapM ((flip updateObjectAsKnownUnit) OT_Monk) actors
          pure . Just $ EventTypeGatherRelic EventGatherRelic{
                 eventGatherRelicGatherers =  map (unitId . asUnit) actors'
               , eventGatherRelicTargetId = objectId t
@@ -322,29 +321,20 @@ linkBuildingsToCommands = do
                ([p], [ot]) -> do
                 -- for now consume the earlier one though this might be an issue later!
                 --linkBuildingToEvent o $ L.Partial.head restrictByType
-                o' <- assignPlayerToObject o p
+                o' <- updateObjectWithPlayerIfNone o p
                 void $ updateObject $ setObjectType o' ot
                 --traceShowM $ o
                 --void $ mapM debugBuildEvent $ restrictByType
                (ps, pts) -> do
                  case ps of
-                  [p] -> void $ assignPlayerToObject o p
+                  [p] -> void $ updateObjectWithPlayerIfNone o p
                   _ -> do
                     --traceShowM $ o
                     --void $ mapM debugBuildEvent $ take 2 xs
                     pure ()
                  case pts of
-                  [ot] -> do
-                    void $ updateObject $ setObjectType o ot
-                  _ -> do
-                    let oBuilding = extractBuilding o
-                    case buildingType oBuilding of
-                      BuildingTypeUnknown -> do
-                        void $ updateObject $ o{objectInfo = ObjectInfoBuilding oBuilding{buildingType = BuildingTypeOneOf $ nonEmptyPartial possibleTypes}}
-                      BuildingTypeKnown _ -> pure ()
-                      BuildingTypeOneOf ne -> do
-                        let newnon = L.intersect (NE.toList ne) pts
-                        void $ updateObject $ o{objectInfo = ObjectInfoBuilding oBuilding{buildingType = BuildingTypeOneOf $ nonEmptyPartial newnon}}
+                  [ot] -> void $ updateObject $ setObjectType o ot
+                  _ -> void $  updateBuildingWithBuildingType o (nonEmptyPartial possibleTypes)
             -- there is only one possible build event - we can link these together
             Just e ->
               linkBuildingToEvent o e
@@ -356,7 +346,7 @@ linkBuildingsToCommands = do
           oBuilding = extractBuilding o
       o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
       o'' <- case eventPlayerResponsible e of
-               Just p -> assignPlayerToObject o' p
+               Just p -> updateObjectWithPlayerIfNone o' p
                Nothing -> pure o'
 
       void $ updateEvent $ e{eventType = EventTypeBuild eBuild{eventBuildBuilding = Just (buildingId . asBuilding $ o)}}
