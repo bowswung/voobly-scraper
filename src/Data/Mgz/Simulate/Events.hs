@@ -3,8 +3,6 @@ module Data.Mgz.Simulate.Events where
 
 import RIO
 
-import Data.List.NonEmpty(NonEmpty(..))
-import qualified Data.List.NonEmpty as NE
 
 
 import Data.Mgz.Deserialise
@@ -27,10 +25,10 @@ eventTechType Event{..} =
     EventTypeResearch e -> pure $ eventResearchTech e
     _ -> Nothing
 
-eventTrainObjectType :: Event -> Maybe (NonEmpty ObjectType)
+eventTrainObjectType :: Event -> Maybe ObjectType
 eventTrainObjectType Event{..} =
   case eventType of
-    EventTypeTrain e -> objectTypeFromUnitType $ eventTrainType e
+    EventTypeTrain e -> Just $ eventTrainType e
     _ -> Nothing
 
 
@@ -79,7 +77,7 @@ data EventPrimary = EventPrimary {
 
 data EventBuild = EventBuild {
   eventBuildBuilders :: [UnitId],
-  eventBuildingType :: BuildingType,
+  eventBuildingType :: ObjectType,
   eventBuildPos :: Pos,
   eventBuildBuilding :: Maybe BuildingId
 }  deriving (Show, Eq, Ord)
@@ -93,10 +91,7 @@ extractEventBuild e =
 eventBuildBuildingObjectType :: Event -> ObjectType
 eventBuildBuildingObjectType Event{..} =
   case eventType of
-    EventTypeBuild e ->
-      case fmap NE.toList $ objectTypeFromBuildingType $ eventBuildingType e of
-        (Just [x]) -> x
-        _ -> error "This should be impossible"
+    EventTypeBuild e -> eventBuildingType e
     _ -> error " Only use this for events previously validated as build events"
 data MilitaryDisposition =
     MilitaryDispositionStance Int
@@ -126,7 +121,7 @@ data EventPatrol = EventPatrol {
 
 data EventTrain = EventTrain {
   eventTrainBuilding :: BuildingId,
-  eventTrainType :: UnitType,
+  eventTrainType :: ObjectType,
   eventTrainNumber :: Int
 }  deriving (Show, Eq, Ord)
 

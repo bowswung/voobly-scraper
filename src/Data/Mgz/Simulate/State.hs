@@ -7,7 +7,6 @@ import RIO
 import Voobly.TH
 
 
-import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
 import Data.Proxy(Proxy(..))
@@ -47,22 +46,13 @@ objectPlacedByGameIdx = ObjectPlacedByGameIdx . objectPlacedByGame
 
 
 
-buildingTypeIdx :: Object -> Maybe BuildingType
-buildingTypeIdx Object{..} =
-  case objectInfo of
-    ObjectInfoBuilding u -> pure $ buildingType u
-    _ -> Nothing
-
-unitTypeIdx :: Object -> Maybe UnitType
-unitTypeIdx Object{..} =
-  case objectInfo of
-    ObjectInfoUnit u -> pure $ unitType u
-    _ -> Nothing
-
 eventActingObjectsIdx :: Event -> [ObjectId]
 eventActingObjectsIdx = eventActingObjects
 
-makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'unitTypeIdx, 'buildingTypeIdx, 'objectPlacedByGameIdx]
+
+
+
+makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'objectPlacedByGameIdx, 'otRestrictToRestrictions]
 makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
@@ -112,69 +102,53 @@ getObjectsForPlayer us i = mapM ((flip getObjectForPlayer) (Just i)) us
 getUnit :: ObjectId -> Sim ObjectUnit
 getUnit i = do
   o <- getObject i
-  fmap asUnit $ updateObjAsTypeW o ObjectTypeWUnit
+  fmap asUnit $ updateWithRestriction o OTRestrictionIsUnit
+
+updateWithRestriction :: Object -> OTRestriction -> Sim Object
+updateWithRestriction o r = updateObject $ restrictObjectType o r
+
+updateWithObjectType :: Object -> ObjectType -> Sim Object
+updateWithObjectType o r = updateObject $ setObjectType o r
+
+updateWithObjectTypes :: Object -> NonEmpty ObjectType -> Sim Object
+updateWithObjectTypes o r = updateObject $ setObjectTypes o r
 
 getUnitForPlayer :: ObjectId -> PlayerId -> Sim ObjectUnit
 getUnitForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
-  fmap asUnit $ updateObjAsTypeW o ObjectTypeWUnit
+  fmap asUnit $ updateWithRestriction o OTRestrictionIsUnit
 
 
 
 getObjectAsType :: ObjectId -> ObjectType -> Sim Object
 getObjectAsType i t = do
   o <- getObjectForPlayer i Nothing
-  case toObjectType o of
-    Nothing -> updateObject $ setObjectType o t
-    Just ots ->
-      if t `elemNonEmpty` ots
-        then
-          if NE.length ots == 1
-            then pure o
-            else updateObject $ setObjectType o t
-        else error $ "Mismatch in object types"
-
+  updateObject $ setObjectType o t
 
 getObject :: ObjectId -> Sim Object
 getObject i = getObjectForPlayer i Nothing
 
 getObjectForPlayer :: ObjectId -> Maybe PlayerId -> Sim Object
 getObjectForPlayer i mpId = do
-  when (i < ObjectId 1) $ error "GOT AN OBJECT ID < 1"
   mO <- lookupObject i
   case mO of
-    Just o ->
-      case mpId of
-        Nothing -> pure o
-        Just pId -> do
-          case objectPlayer o of
-            Nothing -> updateObject o{objectPlayer = Just pId}
-            Just pId' | pId' == pId -> pure o
-                      | pId' == PlayerId 0 -> updateObject o{objectPlayer = Just pId} -- stealing from gaia
-                      | otherwise -> error "PlayerId CHANGED - stolen sheep or conversion? "
-
+    Just o -> updateObjectWithMaybePlayerIfNone o mpId
     Nothing -> do
-      let o = Object {
-                objectId = i
-              , objectPlayer = mpId
-              , objectInfo = ObjectInfoUnknown Nothing
-              , objectPlacedByGame = False
-              }
-      updateObject o
-
+      updateObject $ newObject i mpId
 
 getBuilding :: ObjectId -> Sim ObjectBuilding
 getBuilding i = do
   o <- getObject i
-  fmap asBuilding $ updateObjAsTypeW o ObjectTypeWBuilding
+  fmap asBuilding $ updateWithRestriction o OTRestrictionIsBuilding
 
 getBuildingForPlayer :: ObjectId -> PlayerId -> Sim ObjectBuilding
 getBuildingForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
-  fmap asBuilding $ updateObjAsTypeW o ObjectTypeWBuilding
+  fmap asBuilding $ updateWithRestriction o OTRestrictionIsBuilding
 
 lookupObject :: (ToObjectId a ) => a -> Sim (Maybe Object)
 lookupObject i = do
+  when (toObjectId i < ObjectId 0) $ error "GOT AN OBJECT ID < 0"
   ixset <- fmap (objects . gameState) $ get
   pure $ IxSet.getOne $ IxSet.getEQ (toObjectId i) ixset
 
@@ -235,16 +209,6 @@ findEventsRangeForObjectCreation oid mOt  = do
       Just e -> IxSet.getGT (eventId e) finalSet
 
 
-
-
-
-updateBuildingWithBuildingType :: Object -> NonEmpty ObjectType -> Sim Object
-updateBuildingWithBuildingType o@Object{..} ts =
-  case objectInfo of
-    ObjectInfoBuilding b@Building{..} ->
-      updateObject $ o{objectInfo = ObjectInfoBuilding b{buildingType = restrictBuildingType buildingType ts}}
-    _ -> pure o
-
 updateObjectWithMaybePlayerIfNone :: Object -> Maybe PlayerId -> Sim Object
 updateObjectWithMaybePlayerIfNone o Nothing = pure o
 updateObjectWithMaybePlayerIfNone o (Just pid) = updateObjectWithPlayerIfNone o pid
@@ -252,34 +216,5 @@ updateObjectWithMaybePlayerIfNone o (Just pid) = updateObjectWithPlayerIfNone o 
 updateObjectWithPlayerIfNone :: Object -> PlayerId -> Sim Object
 updateObjectWithPlayerIfNone o pid =
   case objectPlayer o of
-    Nothing -> updateObject o{objectPlayer = Just pid}
+    Nothing -> updateObject $ setObjectPlayer o (Just pid)
     Just _ -> pure o
-
-
-
-updateObjAsTypeW :: Object -> ObjectTypeW -> Sim Object
-updateObjAsTypeW o w = updateObjAsTypeWWithType o w Nothing
-
-
-updateObjAsTypeWWithType :: Object -> ObjectTypeW -> Maybe (NonEmpty ObjectType) -> Sim Object
-updateObjAsTypeWWithType o w mOt = do
-  objectAs <-
-    case objectTypeW o of
-        ObjectTypeWUnknown -> do
-          let oInfo = case w of
-                ObjectTypeWUnit -> ObjectInfoUnit $ Unit UnitTypeUnknown
-                ObjectTypeWBuilding -> ObjectInfoBuilding $ Building BuildingTypeUnknown Nothing Nothing
-                ObjectTypeWMapObject -> error "Can't use for the w resource"
-                ObjectTypeWUnknown -> objectInfo o
-          pure $ o{objectInfo = oInfo}
-
-        ow | ow == w -> pure o
-           | otherwise -> error $  "Could not coerce " ++ show o ++ " to " ++ show w
-  objectF <-
-    case mOt of
-      Nothing -> objectAs
-      Just ot -> setObjectType objectAs ot
-  updateObject objectF
-
-updateObjectAsKnownUnit :: Object -> ObjectType -> Sim Object
-updateObjectAsKnownUnit o ot = updateObjAsTypeWWithType o ObjectTypeWUnit (singleNonEmpty ot)

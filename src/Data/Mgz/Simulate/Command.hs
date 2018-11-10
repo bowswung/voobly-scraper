@@ -144,7 +144,7 @@ instance RunCommand CommandBuild where
     pure . Just $ EventTypeBuild $ EventBuild {
         eventBuildBuilders = map unitId units
       , eventBuildPos = commandBuildPos
-      , eventBuildingType = BuildingTypeKnown commandBuildBuildingType
+      , eventBuildingType = commandBuildBuildingType
       , eventBuildBuilding = Nothing
       }
 instance RunCommand CommandResearch where
@@ -160,7 +160,7 @@ instance RunCommand CommandTrain where
     building <- getBuilding commandTrainBuildingId
     pure . Just $ EventTypeTrain $ EventTrain {
         eventTrainBuilding = buildingId building
-      , eventTrainType = objectTypeToUnitType $ commandTrainUnitType
+      , eventTrainType = commandTrainUnitType
       , eventTrainNumber = commandTrainNumber
       }
 instance RunCommand CommandStop where
@@ -254,8 +254,7 @@ instance RunCommand CommandUngarrison where
 instance RunCommand CommandToggleGate where
   runCommand CommandToggleGate{..} = do
     b <- getBuilding commandToggleGateGate
-
-    _ <- updateBuildingWithBuildingType (objectFromObjectBuilding b) (nonEmptyPartial [OT_Gate, OT_PalisadeGate])
+    void $ updateObject $ setObjectTypes (objectFromObjectBuilding b) $ nonEmptyPartial [OT_Gate, OT_PalisadeGate]
     pure . Just $ EventTypeToggleGate $ EventToggleGate {
       eventToggleGateGate = buildingId b
     }

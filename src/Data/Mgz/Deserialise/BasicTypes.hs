@@ -19,8 +19,7 @@ import Data.Mgz.Constants
 
 newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord) -- object id from rec file - we don't know anything about it!
 
-newtype PlayerId = PlayerId Int deriving (Show, Eq, Ord, Generic) -- 1,2 etc - same as the rec file
-instance Hashable PlayerId
+
 
 existObjectsBreak :: ByteString
 existObjectsBreak = fst $ Base16.decode "0b0008000000020000"

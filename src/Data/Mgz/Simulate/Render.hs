@@ -27,9 +27,9 @@ import Data.Mgz.Simulate.Events
 renderAllObjects :: Sim TL.Text
 renderAllObjects = do
   ss <- get
-  t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \Object{..} -> do
-    oRen <- renderObject $ objectId
-    pure $ rPad 10 (objectIdToInt objectId) <> oRen
+  t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \o -> do
+    oRen <- renderObject $ objectId o
+    pure $ rPad 10 (objectIdToInt $ objectId o) <> oRen
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
 
 
@@ -96,13 +96,13 @@ renderEvent e@Event{..} = do
           pure $ "Patrolled " <> u <> " to " <> (displayShowB . length $ eventPatrolWaypoints) <> " waypoints"
         (EventTypeBuild (EventBuild{..})) -> do
           u <- renderUnits eventBuildBuilders
-          pure $ "Placed " <> renderBuildingType eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
+          pure $ "Placed " <> renderRawObjectType eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
         (EventTypeResearch (EventResearch{..})) -> do
           t <- renderObject eventResearchBuilding
           pure $ "Researched " <> displayShowB eventResearchTech <> " at " <> t
         (EventTypeTrain (EventTrain{..})) -> do
           t <- renderObject eventTrainBuilding
-          pure $ "Trained " <> displayShowB eventTrainNumber <> " " <> renderUnitType eventTrainType  <> "s at " <> t
+          pure $ "Trained " <> displayShowB eventTrainNumber <> " " <> renderRawObjectType eventTrainType  <> "s at " <> t
         (EventTypeStopGeneral (EventStopGeneral{..})) -> do
           u <- renderObjects eventStopSelectedIds
           pure $ "Stopped " <> u
@@ -186,74 +186,40 @@ renderPosSimple (PosSimple x y) = "(" <> displayShowB x <> ", " <> displayShowB 
 buildLText :: TL.Text -> TL.Builder
 buildLText = F.Buildable.build
 
+type RenderPlayer = Bool
+type RenderObjectId = Bool
+
 renderObject :: (ToObjectId a) => a -> Sim TL.Builder
-renderObject oid = do
+renderObject o = renderObjectWithOptions o True True
+
+renderObjectWithOptions :: (ToObjectId a) => a -> Bool -> Bool -> Sim TL.Builder
+renderObjectWithOptions oid doRenderPlayer doRenderObjectId  = do
   m <- lookupObject oid
   case m of
     Nothing -> pure $ "OBJECT NOT FOUND (" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
-    Just Object{..} -> do
+    Just o -> do
+      let t = renderRestrictType $ getObjectRestrict o
+      p <- if doRenderPlayer
+             then do
+              pr <- renderPlayer $ objectPlayer o
+              pure $ " belonging to " <> pr
+             else pure ""
+      pure $ "a " <> t <> (if doRenderObjectId then renderObjectId oid  else "" ) <> p
 
-      t <- case objectInfo of
-                ObjectInfoUnit a -> renderUnit a
-                ObjectInfoBuilding a -> do
-                  b <- renderBuilding a
-                  pure $ b <> " (" <> displayShowB (objectIdToInt objectId) <> ")"
-                ObjectInfoMapObject a -> renderMapObject a
-                ObjectInfoUnknown t ->  pure $ maybe "Unknown object" (displayShowB) t
-      if fmap isGaia objectPlayer == Just True
-        then pure $ "a " <> t
-        else do
-          belong <- renderPlayer objectPlayer
-          pure $ "a " <> t <> " (" <> (displayShowB . objectIdToInt $ objectId) <> ") " <> " belonging to " <> belong
-
-renderObjectType :: (ToObjectId a) => a -> Sim TL.Builder
-renderObjectType oid = do
-  m <- lookupObject oid
-  case m of
-    Nothing -> pure $ "NOT FOUND"
-    Just Object{..} -> do
-      t <- case objectInfo of
-            ObjectInfoUnit a -> renderUnit a
-            ObjectInfoBuilding a -> renderBuilding a
-            ObjectInfoMapObject a -> renderMapObject a
-            ObjectInfoUnknown t -> pure $ maybe "Unknown" (displayShowB) t
-      p <- renderPlayer objectPlayer
-      pure $ p <> " " <> t <> "(" <> (displayShowB . objectIdToInt . toObjectId $ oid) <> ")"
+renderObjectId :: (ToObjectId a ) => a -> TL.Builder
+renderObjectId a = " (" <> (displayShowB . objectIdToInt $ toObjectId a) <> ") "
 
 renderUnits :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderUnits = renderObjects
+
 renderObjects :: (ToObjectId a) => [a] -> Sim TL.Builder
-renderObjects [] = pure "NO UNITS"
+renderObjects [] = pure "NO OBJECTS"
 renderObjects is = do
-  us <- mapM renderObjectType is
+  us <- mapM (\i -> renderObjectWithOptions i False True) is
   let ts = map TL.toLazyText us
       types = L.sort . L.nub $ ts
       rs = map (\t -> (displayShowTL $ length (filter ((==) t) ts)) <> " " <> t <> "s") types
   pure $ F.Buildable.build $ TL.intercalate ", " rs
-
-renderUnit :: Unit -> Sim TL.Builder
-renderUnit (Unit{..}) = pure $ renderUnitType unitType
-
-
-renderBuilding :: Building -> Sim TL.Builder
-renderBuilding (Building{..}) = pure $ renderBuildingType buildingType
-
-
-renderBuildingType :: BuildingType -> TL.Builder
-renderBuildingType (BuildingTypeKnown ot) = renderRawObjectType ot
-renderBuildingType (BuildingTypeOneOf a) = renderObjectTypes $ NE.toList a
-renderBuildingType BuildingTypeUnknown = "UnknownBuilding"
-
-renderUnitType :: UnitType -> TL.Builder
-renderUnitType UnitTypeUnknown = "UnknownUnit"
-renderUnitType UnitTypeVillager = "Villager"
-renderUnitType (UnitTypeOther a) = renderRawObjectType a
-renderUnitType (UnitTypeMilitary m) = renderMilitaryType m
-
-renderMilitaryType :: MilitaryType -> TL.Builder
-renderMilitaryType MilitaryTypeUnknown = "UnknownMilitary"
-renderMilitaryType (MilitaryTypeKnown a) = renderRawObjectType a
-renderMilitaryType (MilitaryTypeOneOf a) = renderObjectTypes $ NE.toList a
 
 renderRawObjectType :: ObjectType -> TL.Builder
 renderRawObjectType = F.Buildable.build . objectTypeToText
@@ -261,11 +227,18 @@ renderRawObjectType = F.Buildable.build . objectTypeToText
 objectTypeToText :: ObjectType -> Text
 objectTypeToText ot =  T.drop 3 $ displayShowT ot
 
+restrictionToText :: OTRestriction -> Text
+restrictionToText ot =  T.drop 13 $ displayShowT ot
+
 renderObjectTypes :: [ObjectType] -> TL.Builder
 renderObjectTypes ots = F.Buildable.build $ T.intercalate "|" $ map objectTypeToText ots
 
-renderMapObject :: MapObject -> Sim TL.Builder
-renderMapObject (MapObject{..}) = pure $ renderRawObjectType mapObjectType
+
+renderRestrictType :: OTRestrict -> TL.Builder
+renderRestrictType (OTRestrictKnown o) = renderRawObjectType o
+renderRestrictType (OTRestrictOneOf o) = renderObjectTypes $ NE.toList o
+renderRestrictType (OTRestrictGeneral o) = "Restricted: " <>  (F.Buildable.build $ T.intercalate "|" $ map restrictionToText  $ NE.toList o)
+renderRestrictType OTRestrictNone = "UnknownType"
 
 displayShowB :: (Show a) => a -> TL.Builder
 displayShowB = F.Buildable.build . displayShowT

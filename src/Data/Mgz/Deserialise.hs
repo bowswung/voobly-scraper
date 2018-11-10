@@ -17,6 +17,7 @@ import qualified Codec.Compression.Zlib.Raw as Zlib
 
 import Data.Mgz.Deserialise.BasicTypes
 import Data.Mgz.Deserialise.Commands
+import Data.Mgz.Constants
 --
 
 parseRec :: HasLogFunc env => RIO env (Either String RecInfo)

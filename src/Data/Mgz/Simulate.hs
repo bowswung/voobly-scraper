@@ -7,7 +7,6 @@ import RIO
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
-import Data.List.NonEmpty(NonEmpty(..))
 import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
@@ -48,7 +47,7 @@ simulate RecInfo{..} = do
   logInfo "Building base events"
 
   let s2 = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 s1 HM.empty)
-
+  pure s2
   logInfo $ "Total events added: " <> displayShow (IxSet.size . events $ s2)
 
   logInfo "Making simple inferences"
@@ -80,49 +79,11 @@ buildBasicEvents (OpTypeSync OpSync{..}) = modify' (\ss -> ss{ticks = ticks ss +
 buildBasicEvents (OpTypeCommand cmd) = handleCommand cmd
 buildBasicEvents _ = pure ()
 
-
--- at the moment we aren't placing wolves etc but we should!
 handlePlayerObject :: ObjectRaw -> Sim ()
 handlePlayerObject oRaw@ObjectRaw{..} = do
-  case objectRawType of
-    -- units
-    70 -> do
-      when (isResourceOrRelic objectRawUnitId) $ do
-        let mObject = MapObject objectRawUnitId (objectRawOwner) oRaw
-        placeMapObject mObject objectRawPos
-      let o = Object {
-                  objectId = objectRawObjectId
-                , objectPlayer =  Just $ objectRawOwner
-                , objectInfo = ObjectInfoUnit $ Unit {
-                            unitType = objectTypeToUnitType objectRawUnitId
-                          }
-                , objectPlacedByGame = True
-                         }
-      void $ updateObject o
-
-    80 -> do
-      let o = Object {
-                  objectId = objectRawObjectId
-                , objectPlayer = Just $ objectRawOwner
-                , objectInfo = ObjectInfoBuilding $ Building {
-                            buildingType = BuildingTypeKnown objectRawUnitId,
-                            buildingPos = Just (objectRawPos),
-                            buildingPlaceEvent = Nothing
-                          }
-                , objectPlacedByGame = True
-                         }
-      void $ updateObject o
-    _ -> do
-      let mObject = MapObject objectRawUnitId (objectRawOwner) oRaw
-      when (HM.member  objectRawUnitId objectTypeToResourceKindMap ) $ placeMapObject mObject objectRawPos
-      let o = Object {
-                  objectId = objectRawObjectId
-                , objectPlayer = Just  $ objectRawOwner
-                , objectInfo = ObjectInfoMapObject $ mObject
-                , objectPlacedByGame = True
-                }
-      void $ updateObject o
-
+  let (o, mObject) = objectFromObjectRaw oRaw
+  placeMapObject mObject objectRawPos
+  void $ updateObject o
     where
       --debugObjectRaw :: Sim ()
       --debugObjectRaw = traceM $ displayShowT objectRawObjectId <> " " <> displayShowT objectRawOwner  <> " " <> (displayShowT $ normaliseObjectType objectRawUnitId) <> " at " <> displayShowT objectRawPos
@@ -133,24 +94,27 @@ placeMapObject mo p = do
   let mTile = IxSet.getOne $ IxSet.getEQ (posToCombinedIdx p) mTiles
   case mTile of
     Nothing -> error $ "Could not find map tile at " ++ show p ++ " for object " ++ show mo
-    Just t ->
-      case mapTileObjects t of
-        [] -> do
-          let newMap = IxSet.updateIx (mapTileCombinedIdx t) t{mapTileObjects = [mo]} mTiles
+    Just t -> do
+      let newOs = mapTileObjects t ++ [mo]
+      if length (filter (not . canOverlap) newOs) < 2
+        then do
+          let newMap = IxSet.updateIx (mapTileCombinedIdx t) t{mapTileObjects = newOs} mTiles
           modify' $ \ss ->
             let gs = gameState ss
             in ss{gameState = gs{mapTiles = newMap}}
-        xs -> error $ "Overlap in map tile when trying to place " ++ show mo ++ " at " ++ show p ++ ": found " ++ show xs
-
+        else  error $ "Overlap in map tile when trying to place " ++ show mo ++ " at " ++ show p ++ ": found " ++ show (mapTileObjects t)
+    where
+      canOverlap :: MapObject -> Bool
+      canOverlap = canObjectTypeOverlap . objectRawUnitId . mapObjectOriginal
 
 
 
 makeSimpleInferences :: Sim ()
 makeSimpleInferences = do
-  unknownUnits <- fmap (IxSet.getEQ (Just UnitTypeUnknown)) $ getObjectSet
+  unknownUnits <- fmap (IxSet.getLT OTRestrictionIsMilitaryUnit . IxSet.getEQ ObjectTypeWUnit) $ getObjectSet
   void $ mapM inferUnitType $ IxSet.toList unknownUnits
 
-  unknownBuildings <- fmap (IxSet.getEQ (Just BuildingTypeUnknown)) $ getObjectSet
+  unknownBuildings <- fmap (IxSet.getLT OTRestrictionIsNotActableByMilitary . IxSet.getEQ ObjectTypeWBuilding) $ getObjectSet
   void $ mapM inferBuildingType $ IxSet.toList unknownBuildings
 
   unplayerEvents <- fmap (IxSet.getEQ (Nothing :: Maybe PlayerId)) $ getEventSet
@@ -178,7 +142,7 @@ makeSimpleInferences = do
         xs -> error $ "Multiple player owners for units in single event" ++ show xs
 
     inferPlayerForObjects :: Event -> Sim ()
-    inferPlayerForObjects Event{..} = do
+    inferPlayerForObjects e@Event{..} = do
       case eventPlayerResponsible of
         Nothing -> pure ()
         Just pid -> do
@@ -187,29 +151,31 @@ makeSimpleInferences = do
     inferPlayerEtcForRepairGarrison :: Event -> Sim ()
     inferPlayerEtcForRepairGarrison Event{..} =
       case eventType of
-        EventTypeRepair EventRepair{..} ->
+        EventTypeRepair EventRepair{..} -> do
           o <- lookupObjectOrFail eventRepairRepaired
-          o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
-          updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
-        EventTypeGarrison EventGarrison{..} ->
+          o' <- updateWithRestriction o OTRestrictionIsRepairable
+          void $ updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+        EventTypeGarrison EventGarrison{..} -> do
           o <- lookupObjectOrFail eventGarrisonTargetId
-          o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
-          updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
-        EventTypeGarrison EventUngarrison{..} ->
+          o' <- updateWithRestriction o OTRestrictionIsGarrisonable
+          void $ updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+        EventTypeUngarrison EventUngarrison{..} -> do
           os <- mapM lookupObjectOrFail eventUngarrisonReleasedFrom
-          (flip mapM) os $ \o -> do
-            o' <- updateObjAsTypeWWithType o ObjectTypeWBuildingOrSiege Nothing
+          void $ (flip mapM) os $ \o -> do
+            o' <- updateWithRestriction o OTRestrictionIsUngarrisonable
             updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+
+        _ -> pure ()
 
     inferUnitType :: Object -> Sim ()
     inferUnitType o = do
       villagerEvents <- fmap (ixsetGetIn [EventTypeWBuild]  . IxSet.getEQ (objectId o)) $ getEventSet
       if IxSet.size villagerEvents > 0
-        then void $ updateObject o{objectInfo = ObjectInfoUnit $ Unit UnitTypeVillager}
+        then void $ updateWithObjectType o OT_Villager
         else do
           militaryEvents <- fmap (ixsetGetIn [EventTypeWPatrol, EventTypeWMilitaryDisposition, EventTypeWTargetedMilitaryOrder]  . IxSet.getEQ (objectId o)) $ getEventSet
           if IxSet.size militaryEvents > 0
-            then void $ updateObject o{objectInfo = ObjectInfoUnit $ Unit (UnitTypeMilitary MilitaryTypeUnknown)}
+            then void $ updateWithRestriction o OTRestrictionIsMilitaryUnit
             else pure ()
 
     inferBuildingType :: Object -> Sim ()
@@ -220,14 +186,14 @@ makeSimpleInferences = do
       when (length utsFromTechs < 1 && length techEvents > 0) $ traceM $ "Could not find a building type that researches " <> displayShowT researchedTechs
 
       trainEvents <- fmap (IxSet.toList . ixsetGetIn [EventTypeWTrain]  . IxSet.getEQ (objectId o)) $ getEventSet
-      let trainedUnitTypes = L.nub . concat . map NE.toList . catMaybes $ map eventTrainObjectType trainEvents
+      let trainedUnitTypes = L.nub . catMaybes $ map eventTrainObjectType trainEvents
           utsFromTrainedUnits = L.nub . concat . catMaybes $ map ((flip HM.lookup) trainUnitToBuildingMap) trainedUnitTypes
       when (length utsFromTrainedUnits < 1 && length trainEvents > 0) $ traceM $ "Could not find a building type that trains " <> displayShowT trainedUnitTypes
 
       case L.nub $ concat [utsFromTechs, utsFromTrainedUnits] of
         [] -> pure ()
-        [x] -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeKnown x) (buildingObjectPos o) (buildingPlaceEvent . extractBuilding $ o)}
-        x:xs -> void $ updateObject o{objectInfo = ObjectInfoBuilding $ Building (BuildingTypeOneOf $ x :| xs) (buildingObjectPos o) (buildingPlaceEvent . extractBuilding $ o)}
+        [x] -> void $ updateWithObjectType o x
+        xs -> void $ updateWithObjectTypes o $ nonEmptyPartial xs
 
     inferDetailForEvent :: Event -> Sim ()
     inferDetailForEvent e@Event{..} = do
@@ -244,7 +210,7 @@ makeSimpleInferences = do
 
     construeAsGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsGather pId t actors p =
-      if and (map isObjectVillager actors) && isObjectResource t && (not $ isObjectEnemy pId t)
+      if and (map isVillager actors) && isResource t && (not $ isObjectEnemy pId t)
         then do
          pure . Just $ EventTypeGather EventGather{
             eventGatherTargetId = objectId t
@@ -252,9 +218,9 @@ makeSimpleInferences = do
           , eventGatherPos = p
           }
         else
-          if and (map ((==) ObjectTypeWUnit . objectTypeW) actors) && isObjectResource t &&  (not $ isObjectEnemy pId t) && (not . isObjectPrimaryActableByPlayerMilitary pId $ t)
+          if and (map ((==) ObjectTypeWUnit . objectTypeW) actors) && isResource t &&  (not $ isObjectEnemy pId t) && (anyMeetsRestriction t OTRestrictionIsNotActableByMilitary)
             then do
-              actors' <- mapM (\o -> updateObject o{objectInfo = ObjectInfoUnit Unit{unitType = UnitTypeVillager}}) actors
+              actors' <- mapM (\o -> updateObject $  restrictObjectType o OTRestrictionIsLandResourceGatherer) actors
               pure . Just $ EventTypeGather EventGather{
                     eventGatherTargetId = objectId t
                   , eventGatherGatherers = map (unitId . asUnit) actors'
@@ -263,9 +229,10 @@ makeSimpleInferences = do
             else pure Nothing
     construeAsAttack :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsAttack pId t actors p =
-      if isObjectEnemy pId t
+      if isObjectEnemy pId t && or (map ((==) ObjectTypeWUnit . objectTypeW) actors)
         then do
-         void $ mapM ((flip updateBuildingWithBuildingType) attackingBuildingTypes) actors
+         void $ (flip mapM) actors $ \b -> updateWithRestriction b OTRestrictionCanAttack
+
          pure . Just $ EventTypeAttack EventAttack{
                 eventAttackAttackers =  map objectId actors
               , eventAttackTargetId = objectId t
@@ -274,9 +241,9 @@ makeSimpleInferences = do
         else pure Nothing
     construeAsRelicGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsRelicGather _pId t actors p =
-      if doesObjectMatch t isRelic -- the only people who can primary relics are monks
+      if getObjectType t == Just OT_Relic -- the only people who can primary relics are monks
         then do
-         actors' <- mapM ((flip updateObjectAsKnownUnit) OT_Monk) actors
+         actors' <- mapM ((flip updateWithObjectType) OT_Monk) actors
          pure . Just $ EventTypeGatherRelic EventGatherRelic{
                 eventGatherRelicGatherers =  map (unitId . asUnit) actors'
               , eventGatherRelicTargetId = objectId t
@@ -287,46 +254,32 @@ makeSimpleInferences = do
 
 linkBuildingsToCommands :: Sim ()
 linkBuildingsToCommands = do
-  -- first we try to classify our totally unknown objects as units
-  unknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown)) $ getObjectSet
-  void $ mapM tryBasicAssigning unknownObjects
 
   buildingsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWBuilding) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
-  void $ mapM assignBasedOnBuildOrders $  filter (isNothing . buildingPlaceEvent . extractBuilding) buildingsMissingInfo
+  void $ mapM assignBasedOnBuildOrders $  filter (isNothing . getBuildingPlaceEvent) buildingsMissingInfo
 
   makeSimpleInferences
 
   where
-    tryBasicAssigning :: Object -> Sim ()
-    tryBasicAssigning o@Object{..} =
-      case objectInfo of
-        ObjectInfoUnknown (Just t) ->
-          case objectTypeToObjectTypeW t of
-            ObjectTypeWBuilding -> void $ updateObject $ o{objectInfo = ObjectInfoBuilding Building{buildingType = BuildingTypeKnown t, buildingPos = Nothing, buildingPlaceEvent = Nothing}}
-            ObjectTypeWUnit -> void $ updateObject $ o{objectInfo = ObjectInfoUnit Unit{unitType = objectTypeToUnitType t}}
-            ObjectTypeWMapObject -> error "A new map object appeared? How???"
-            -- if it is unknown then, well, no change
-            _ -> pure ()
-        _ -> pure ()
     assignBasedOnBuildOrders :: Object -> Sim ()
-    assignBasedOnBuildOrders o@Object{..} = do
-      let b = extractBuilding o
-      preEvents <- findEventsRangeForObjectCreation objectId (fmap nonEmptySingle $ toObjectType o)
+    assignBasedOnBuildOrders o = do
+      preEvents <- findEventsRangeForObjectCreation (objectId o) (getObjectType o)
       let buildEvents = filter (isNothing . eventBuildBuilding . extractEventBuild  ) $ IxSet.toList $ (IxSet.getEQ EventTypeWBuild) preEvents
           restrictByPlayer =
-            case objectPlayer of
+            case objectPlayer o of
               Nothing -> buildEvents
               Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
           restrictByType =
-            case toObjectType b of
+            case getObjectTypes o of
               Nothing -> restrictByPlayer
               Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
 
       foundE <- case restrictByType of
          [] -> do
+          traceM $ "\n\nImpossible - this building was never placed?"
           traceShowM $ o
           void $ mapM debugBuildEvent $ buildEvents
-          error $ "Impossible - this building was never placed?"
+          pure Nothing
          [x] -> pure . Just $ x
          _xs -> do
           --traceM $ "\n\n"
@@ -345,9 +298,10 @@ linkBuildingsToCommands = do
                  [p] -> updateObjectWithPlayerIfNone o p
                  _ -> pure o
 
-         void $ case possibleTypes of
-           [ot] -> updateObject $ setObjectType o' ot
-           _ -> updateBuildingWithBuildingType o' (nonEmptyPartial possibleTypes)
+         case possibleTypes of
+           [] -> traceM $ "No possible types found!"
+           [ot] -> void $ updateObject $ setObjectType o' ot
+           _ -> void $ updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
 
         Just e ->
         -- there is only one possible build event - we can link these together
@@ -356,14 +310,13 @@ linkBuildingsToCommands = do
     linkBuildingToEvent :: Object -> Event -> Sim ()
     linkBuildingToEvent o e = do
       let eBuild = extractEventBuild e
-          oBuilding = extractBuilding o
       o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
       o'' <- case eventPlayerResponsible e of
                Just p -> updateObjectWithPlayerIfNone o' p
                Nothing -> pure o'
 
       void $ updateEvent $ e{eventType = EventTypeBuild eBuild{eventBuildBuilding = Just (buildingId . asBuilding $ o)}}
-      void $ updateObject $ o''{objectInfo = ObjectInfoBuilding oBuilding{buildingPlaceEvent = Just (eventId e)}}
+      void $ updateObject $ setBuildingPlaceEvent o'' $ Just (eventId e)
       pure ()
     debugBuildEvent :: Event -> Sim ()
     debugBuildEvent e = do
