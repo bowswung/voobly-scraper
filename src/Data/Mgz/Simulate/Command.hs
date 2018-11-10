@@ -211,7 +211,7 @@ instance RunCommand CommandResign where
 
 instance RunCommand CommandAttackGround where
   runCommand CommandAttackGround{..} = do
-    units <- mapM getUnit commandAttackGroundSelectedIds
+    units <- mapM (fmap asUnit . (flip getObjectWithRestriction) OTRestrictionCanAttackGround) commandAttackGroundSelectedIds
 
     pure . Just $ EventTypeAttackGround $ EventAttackGround {
         eventAttackGroundUnitIds = map unitId units,
@@ -263,7 +263,7 @@ instance RunCommand CommandGarrison where
   runCommand c@CommandGarrison{..} =
     if commandGarrisonType `elem` [GarrisonTypePack, GarrisonTypeUnpack]
       then do
-        trebs <- mapM (\i -> fmap asUnit $ getObjectAsType i OT_Trebuchet) commandGarrisonSelectedIds
+        trebs <- mapM (\i -> fmap asUnit $ getObjectAsType i OT_TrebuchetPacked) commandGarrisonSelectedIds
         pure . Just $ EventTypePackOrUnpack $ EventPackOrUnpack {
           eventPackOrUnpackTrebuchets = map unitId trebs
         , eventPackOrUnpackPacked = commandGarrisonType == GarrisonTypePack

@@ -47,7 +47,6 @@ simulate RecInfo{..} = do
   logInfo "Building base events"
 
   let s2 = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 s1 HM.empty)
-  pure s2
   logInfo $ "Total events added: " <> displayShow (IxSet.size . events $ s2)
 
   logInfo "Making simple inferences"
@@ -169,7 +168,7 @@ makeSimpleInferences = do
 
     inferUnitType :: Object -> Sim ()
     inferUnitType o = do
-      villagerEvents <- fmap (ixsetGetIn [EventTypeWBuild]  . IxSet.getEQ (objectId o)) $ getEventSet
+      villagerEvents <- fmap (ixsetGetIn [EventTypeWBuild, EventTypeWRepair]  . IxSet.getEQ (objectId o)) $ getEventSet
       if IxSet.size villagerEvents > 0
         then void $ updateWithObjectType o OT_Villager
         else do
@@ -202,7 +201,7 @@ makeSimpleInferences = do
           EventTypePrimary EventPrimary{..} -> do
             target <- lookupObjectOrFail eventPrimaryTarget
             actors <- mapM lookupObjectOrFail eventPrimaryObjects
-            tryWhileNothing $ map (\f -> f eventPlayerResponsible target actors eventPrimaryPos) [construeAsGather, construeAsAttack, construeAsRelicGather]
+            tryWhileNothing $ map (\f -> f eventPlayerResponsible target actors eventPrimaryPos) [construeAsGather, construeAsAttack, construeAsRelicGather, construeAsVillOnRepairable]
           _ -> pure Nothing
       case mEt of
             Nothing -> pure ()
@@ -210,7 +209,8 @@ makeSimpleInferences = do
 
     construeAsGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsGather pId t actors p =
-      if and (map isVillager actors) && isResource t && (not $ isObjectEnemy pId t)
+       -- herdables can show up in these events
+      if and (map isVillager $ filter (not . isHerdable) actors) && isResource t && (not $ isObjectEnemy pId t)
         then do
          pure . Just $ EventTypeGather EventGather{
             eventGatherTargetId = objectId t
@@ -227,6 +227,31 @@ makeSimpleInferences = do
                   , eventGatherPos = p
                 }
             else pure Nothing
+
+    construeAsVillOnRepairable :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
+    construeAsVillOnRepairable pId origT actors p =
+      if and (map isVillager actors) && (isObjectFriend pId origT) && (not $ isResource origT)
+        then do
+          -- vills can only primary act on owned objects if they are reppairables
+          t <- if isBuilding origT then pure origT else updateWithRestriction origT OTRestrictionIsRepairable
+          let ts =
+                if isBuilding t
+                  then [EventTypeWRepair, EventTypeWBuild] ++ if isNotDropoffBuilding t then [] else [EventTypeWDropoff]
+                  else if isUnit t
+                         then [EventTypeWRepair]
+                         else [EventTypeWRepair, EventTypeWBuild, EventTypeWDropoff]
+
+          pure . Just $ EventTypeVillOnRepairable EventVillOnRepairable{
+            eventVillOnRepairableType = nonEmptyPartial ts
+          , eventVillOnRepairableObject = objectId t
+          , eventVillOnRepairableVills = map (unitId . asUnit) actors
+          , eventVillOnRepairablePos = p
+          }
+        else pure Nothing
+
+
+
+
     construeAsAttack :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsAttack pId t actors p =
       if isObjectEnemy pId t && or (map ((==) ObjectTypeWUnit . objectTypeW) actors)
@@ -238,7 +263,18 @@ makeSimpleInferences = do
               , eventAttackTargetId = objectId t
               , eventAttackPos = p
               }
-        else pure Nothing
+        else
+          case pId of
+            Just thisPlayer ->
+              --if military units primary something unknown then it must belong to the enemy
+              if or (map isMilitaryUnit actors) && objectPlayer t == Nothing
+                then do
+                  let otherPlayer = if thisPlayer == PlayerId 1 then PlayerId 2 else PlayerId 1 -- @team
+                  void $ updateObjectWithPlayerIfNone t otherPlayer
+                  pure Nothing
+                else pure Nothing
+            _ -> pure Nothing
+
     construeAsRelicGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsRelicGather _pId t actors p =
       if getObjectType t == Just OT_Relic -- the only people who can primary relics are monks

@@ -29,7 +29,7 @@ renderAllObjects = do
   ss <- get
   t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \o -> do
     oRen <- renderObject $ objectId o
-    pure $ rPad 10 (objectIdToInt $ objectId o) <> oRen
+    pure $ rPad 6 (objectIdToInt $ objectId o) <> rPad 10 (renderObjectTypeW $ objectTypeW o) <> oRen
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
 
 
@@ -58,11 +58,16 @@ renderEvent e@Event{..} = do
         (EventTypePrimary (EventPrimary{..})) -> do
           t <- renderObject eventPrimaryTarget
           u <- renderObjects eventPrimaryObjects
-          pure $ "Primaried " <> t <> " with " <> u <> " at " <> renderPos eventPrimaryPos
+          pure $ "Primaried a " <> t <> " with " <> u <> " at " <> renderPos eventPrimaryPos
         (EventTypeGather (EventGather{..})) -> do
           t <- renderObject eventGatherTargetId
           u <- renderObjects eventGatherGatherers
-          pure $ "Gathered " <> t <> " with " <> u <> " at " <> renderPos eventGatherPos
+          pure $ "Gathered a " <> t <> " with " <> u <> " at " <> renderPos eventGatherPos
+        (EventTypeVillOnRepairable (EventVillOnRepairable{..})) -> do
+          t <- renderObject eventVillOnRepairableObject
+          u <- renderObjects eventVillOnRepairableVills
+          let ats = renderMany $ map eventTypeWToText (NE.toList eventVillOnRepairableType)
+          pure $ ats <> " " <> t <> " with " <> u <> " at " <> renderPos eventVillOnRepairablePos
         (EventTypeGatherRelic (EventGatherRelic{..})) -> do
           t <- renderObject eventGatherRelicTargetId
           u <- renderObjects eventGatherRelicGatherers
@@ -71,16 +76,16 @@ renderEvent e@Event{..} = do
         (EventTypeAttack (EventAttack{..})) -> do
           t <- renderObject eventAttackTargetId
           u <- renderObjects eventAttackAttackers
-          pure $ "Attacked " <> t <> " with " <> u <> " at " <> renderPos eventAttackPos
+          pure $ "Attacked a " <> t <> " with " <> u <> " at " <> renderPos eventAttackPos
         (EventTypeMove (EventMove{..})) -> do
           u <- renderUnits eventMoveUnits
-          pure $ "Moved " <> u <> " to " <> renderPos eventMovePos
+          pure $ "Moved a " <> u <> " to " <> renderPos eventMovePos
         (EventTypeMilitaryDisposition (EventMilitaryDisposition{..})) -> do
           u <- renderUnits eventMilitaryDispositionUnits
           let (mt, tos) = case eventMilitaryDispositionType of
                          MilitaryDispositionStance i -> ("Stance", displayShowB i)
                          MilitaryDispositionFormation i -> ("Formation", displayShowB i)
-          pure $ "Changed " <> mt <> " of " <> u <> " to " <> tos
+          pure $ "Changed a " <> mt <> " of " <> u <> " to " <> tos
         (EventTypeTargetedMilitaryOrder (EventTargetedMilitaryOrder{..})) -> do
           u <- renderUnits eventTargetedMilitaryOrderUnits
           t <- renderObject eventTargetedMilitaryOrderTarget
@@ -96,7 +101,7 @@ renderEvent e@Event{..} = do
           pure $ "Patrolled " <> u <> " to " <> (displayShowB . length $ eventPatrolWaypoints) <> " waypoints"
         (EventTypeBuild (EventBuild{..})) -> do
           u <- renderUnits eventBuildBuilders
-          pure $ "Placed " <> renderRawObjectType eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
+          pure $ "Placed a " <> renderRawObjectType eventBuildingType <> " at " <> renderPos eventBuildPos <> " with " <> u
         (EventTypeResearch (EventResearch{..})) -> do
           t <- renderObject eventResearchBuilding
           pure $ "Researched " <> displayShowB eventResearchTech <> " at " <> t
@@ -118,28 +123,28 @@ renderEvent e@Event{..} = do
               pure $ "Rallied " <> b <> " to " <> tr <> " at map position " <> renderPos eventRallyPos
         (EventTypeDelete (EventDelete{..})) -> do
           t <- renderObject eventDeleteObjectId
-          pure $ "Deleted " <> t
+          pure $ "Deleted a " <> t
         (EventTypeResign (EventResign{..})) -> pure $ "Resigned "
         (EventTypeAttackGround (EventAttackGround{..})) -> do
           u <- renderUnits eventAttackGroundUnitIds
-          pure $ "Attacked the ground " <> " at " <> renderPos eventAttackGroundPos <> " with " <> u
+          pure $ "Attacked the ground at " <> renderPos eventAttackGroundPos <> " with " <> u
         (EventTypeTribute (EventTribute{..})) -> do
           toPlayer <- renderPlayer $ Just eventTributeTo
           pure $ "Tributed " <> toPlayer <> " " <> (displayShowB eventTributeAmount) <> " " <> displayShowB eventTributeResourceKind <> " with a transaction fee of " <> displayShowB eventTributeTransationFee
         (EventTypeRepair (EventRepair{..})) -> do
           u <- renderUnits eventRepairRepairers
           o <- renderObject eventRepairRepaired
-          pure $ "Repaired " <> o <> " with " <> u
+          pure $ "Repaired a " <> o <> " with " <> u
         (EventTypeUngarrison (EventUngarrison{..})) -> do
           o <- renderObjects eventUngarrisonReleasedFrom
           pure $ "Ungarrisoned from " <> o
         (EventTypeToggleGate (EventToggleGate{..})) -> do
           o <- renderObject eventToggleGateGate
-          pure $ "Toggled " <> o
+          pure $ "Toggled a " <> o
         (EventTypeGarrison (EventGarrison{..})) -> do
           t <- renderObject eventGarrisonTargetId
           u <- renderUnits eventGarrisonGarrisonedUnits
-          pure $ "Garrisoned " <> u <> " in " <> t
+          pure $ "Garrisoned " <> u <> " in a " <> t
         (EventTypePackOrUnpack (EventPackOrUnpack{..})) -> do
           let pack = if eventPackOrUnpackPacked then "Packed" else "Unpacked"
           u <- renderUnits eventPackOrUnpackTrebuchets
@@ -204,7 +209,7 @@ renderObjectWithOptions oid doRenderPlayer doRenderObjectId  = do
               pr <- renderPlayer $ objectPlayer o
               pure $ " belonging to " <> pr
              else pure ""
-      pure $ "a " <> t <> (if doRenderObjectId then renderObjectId oid  else "" ) <> p
+      pure $ t <> (if doRenderObjectId then renderObjectId oid  else "" ) <> p
 
 renderObjectId :: (ToObjectId a ) => a -> TL.Builder
 renderObjectId a = " (" <> (displayShowB . objectIdToInt $ toObjectId a) <> ") "
@@ -230,9 +235,20 @@ objectTypeToText ot =  T.drop 3 $ displayShowT ot
 restrictionToText :: OTRestriction -> Text
 restrictionToText ot =  T.drop 13 $ displayShowT ot
 
+objectTypeWToText :: ObjectTypeW -> Text
+objectTypeWToText ot =  T.drop 11 $ displayShowT ot
+
+eventTypeWToText :: EventTypeW -> Text
+eventTypeWToText ot =  T.drop 10 $ displayShowT ot
+
 renderObjectTypes :: [ObjectType] -> TL.Builder
 renderObjectTypes ots = F.Buildable.build $ T.intercalate "|" $ map objectTypeToText ots
 
+renderMany :: [Text] -> TL.Builder
+renderMany ts = F.Buildable.build $ T.intercalate "|" $ ts
+
+renderObjectTypeW :: ObjectTypeW -> TL.Builder
+renderObjectTypeW = F.Buildable.build . objectTypeWToText
 
 renderRestrictType :: OTRestrict -> TL.Builder
 renderRestrictType (OTRestrictKnown o) = renderRawObjectType o

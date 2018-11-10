@@ -110,22 +110,24 @@ instance Hashable ObjectTypeW
 
 -- this might be better as a more flexible dsl! that way it can also cover specific object types etc and we can have one unified interface
 data OTRestriction =
-    OTRestrictionIsUnit
+    OTRestrictionCanAttack
+  | OTRestrictionIsRepairable
+  | OTRestrictionIsUngarrisonable
+  | OTRestrictionIsGarrisonable
+  | OTRestrictionIsUnit
   | OTRestrictionIsMilitaryUnit
+  | OTRestrictionCanAttackGround
   | OTRestrictionIsGatherer
   | OTRestrictionIsLandResourceGatherer
   | OTRestrictionIsBuilder
   | OTRestrictionIsMonk
-  | OTRestrictionIsRepairable
-  | OTRestrictionIsUngarrisonable
-  | OTRestrictionIsGarrisonable
-  | OTRestrictionCanAttack
   | OTRestrictionIsBuilding
+  | OTRestrictionIsNotDropoffBuilding
+  | OTRestrictionIsMapObject
   | OTRestrictionIsNotActableByMilitary
   | OTRestrictionIsResource
   | OTRestrictionIsLandResource
   | OTRestrictionIsRelic
-  | OTRestrictionIsMapObject
   deriving (Show, Eq, Ord, Enum, Bounded, Generic)
 instance Hashable OTRestriction
 
@@ -142,10 +144,12 @@ restrictionToKnownObjectTypeW OTRestrictionIsResource = pure ObjectTypeWMapObjec
 restrictionToKnownObjectTypeW OTRestrictionIsLandResource = pure ObjectTypeWMapObject
 restrictionToKnownObjectTypeW OTRestrictionIsRelic = pure ObjectTypeWMapObject
 restrictionToKnownObjectTypeW OTRestrictionIsMapObject = pure ObjectTypeWMapObject
+restrictionToKnownObjectTypeW OTRestrictionCanAttackGround = pure ObjectTypeWUnit
 restrictionToKnownObjectTypeW OTRestrictionIsRepairable = Nothing
 restrictionToKnownObjectTypeW OTRestrictionIsGarrisonable = Nothing
 restrictionToKnownObjectTypeW OTRestrictionIsUngarrisonable = Nothing
 restrictionToKnownObjectTypeW OTRestrictionIsNotActableByMilitary = Nothing
+restrictionToKnownObjectTypeW OTRestrictionIsNotDropoffBuilding = pure ObjectTypeWBuilding
 
 
 
@@ -168,6 +172,8 @@ restrictionToObjectTypes OTRestrictionIsLandResource = landResourceTypes
 restrictionToObjectTypes OTRestrictionIsRelic = [OT_Relic]
 restrictionToObjectTypes OTRestrictionIsNotActableByMilitary = notActableByMilitaryTypes
 restrictionToObjectTypes OTRestrictionIsMapObject = allMapObjects
+restrictionToObjectTypes OTRestrictionCanAttackGround = attackGroundUnits
+restrictionToObjectTypes OTRestrictionIsNotDropoffBuilding = filter (\o -> not $ o `elem` dropoffBuildings) $ allBuildings
 
 
 
@@ -218,6 +224,8 @@ nonMilitaryUnits = [OT_Villager, OT_FishingShip, OT_Sheep, OT_TradeCart, OT_Trad
 allMilitaryUnits :: [ObjectType]
 allMilitaryUnits = filter (\t -> not $ t `elem` nonMilitaryUnits) allUnits
 
+attackGroundUnits :: [ObjectType]
+attackGroundUnits = [OT_Trebuchet, OT_TrebuchetPacked, OT_Mangonel]
 allBuildings :: [ObjectType]
 allBuildings = L.nub $ HM.keys buildingToTechMap ++ HM.keys buildingToTrainUnitMap ++ nonActingBuildings ++ attackingBuildings
 
@@ -241,6 +249,9 @@ garrisonableBoats = [OT_TransportShip]
 
 attackingBuildings :: [ObjectType]
 attackingBuildings = [OT_TownCenter, OT_Castle, OT_WatchTower]
+
+dropoffBuildings :: [ObjectType]
+dropoffBuildings = [OT_TownCenter, OT_LumberCamp, OT_Mill, OT_MiningCamp, OT_Dock]
 
 allResourceTypes :: [ObjectType]
 allResourceTypes = HM.keys objectTypeToResourceKindMap

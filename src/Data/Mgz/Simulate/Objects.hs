@@ -36,8 +36,14 @@ module Data.Mgz.Simulate.Objects(
   setObjectPlayer,
   objectTypeW,
   isVillager,
+  isHerdable,
   isResource,
-  isObjectEnemy
+  isObjectEnemy,
+  isMilitaryUnit,
+  isUnit,
+  isObjectFriend,
+  isBuilding,
+  isNotDropoffBuilding
   ) where
 
 import RIO
@@ -400,6 +406,16 @@ isObjectEnemy (Just p) Object{..} =
         then False
         else op /= p
 
+isObjectFriend :: Maybe PlayerId -> Object -> Bool
+isObjectFriend Nothing _ = False
+isObjectFriend (Just p) Object{..} =
+  case _objectPlayer of
+    Nothing -> False
+    Just op ->
+      if isPlayerGaia op
+        then False
+        else op == p
+
 
 {-
 
@@ -409,6 +425,21 @@ just some helpful specicalisations
 isVillager :: HasObjectRestrict a => a -> Bool
 isVillager a = getObjectType a == Just OT_Villager
 
+isHerdable :: HasObjectRestrict a => a -> Bool
+isHerdable a = getObjectType a == Just OT_Sheep
+
+
+isBuilding :: HasObjectRestrict a => a -> Bool
+isBuilding a = anyMeetsRestriction a OTRestrictionIsBuilding
+
+isUnit :: HasObjectRestrict a => a -> Bool
+isUnit a = anyMeetsRestriction a OTRestrictionIsUnit
+
+isMilitaryUnit :: HasObjectRestrict a => a -> Bool
+isMilitaryUnit a = anyMeetsRestriction a OTRestrictionIsMilitaryUnit
+
+isNotDropoffBuilding :: HasObjectRestrict a => a -> Bool
+isNotDropoffBuilding a = anyMeetsRestriction a OTRestrictionIsNotDropoffBuilding
 
 isResource :: HasObjectRestrict a => a -> Bool
 isResource a = anyMeetsRestriction a OTRestrictionIsResource

@@ -8,7 +8,7 @@ import RIO
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import Data.Mgz.Simulate.Objects
-
+import Data.List.NonEmpty(NonEmpty(..))
 
 data EventKind =
     EventKindReal Command -- something that is directly derived from a command
@@ -55,6 +55,13 @@ data EventGather = EventGather {
   eventGatherGatherers :: [UnitId],
   eventGatherTargetId :: ObjectId,
   eventGatherPos :: Pos
+} deriving (Show, Eq, Ord)
+
+data EventVillOnRepairable = EventVillOnRepairable {
+  eventVillOnRepairableVills :: [UnitId],
+  eventVillOnRepairableType :: NonEmpty EventTypeW,
+  eventVillOnRepairableObject :: ObjectId,
+  eventVillOnRepairablePos :: Pos
 } deriving (Show, Eq, Ord)
 
 data EventGatherRelic = EventGatherRelic {
@@ -254,6 +261,7 @@ data EventType =
   | EventTypeTownBell EventTownBell
   | EventTypeBackToWork EventBackToWork
   | EventTypeWall EventWall
+  | EventTypeVillOnRepairable EventVillOnRepairable
   deriving (Show, Eq, Ord)
 
 
@@ -289,6 +297,7 @@ instance ReferencesObjectIds EventType where
   referencesObjectIds (EventTypeTownBell e) = referencesObjectIds e
   referencesObjectIds (EventTypeBackToWork e) = referencesObjectIds e
   referencesObjectIds (EventTypeWall e) = referencesObjectIds e
+  referencesObjectIds (EventTypeVillOnRepairable e) = referencesObjectIds e
 
 class ReferencesObjectIds a where
   referencesObjectIds :: a -> [ObjectId]
@@ -304,6 +313,9 @@ instance ReferencesObjectIds EventAttack where
 
 instance ReferencesObjectIds EventGather where
    referencesObjectIds EventGather{..} = eventGatherTargetId:(map toObjectId eventGatherGatherers)
+
+instance ReferencesObjectIds EventVillOnRepairable where
+   referencesObjectIds e@EventVillOnRepairable{..} = (toObjectId eventVillOnRepairableObject):eventActingObjects e
 
 instance ReferencesObjectIds EventGatherRelic where
    referencesObjectIds EventGatherRelic{..} = eventGatherRelicTargetId:(map toObjectId eventGatherRelicGatherers)
@@ -374,6 +386,8 @@ data EventTypeW =
   | EventTypeWTownBell
   | EventTypeWBackToWork
   | EventTypeWWall
+  | EventTypeWDropoff
+  | EventTypeWVillOnRepairable
   deriving (Show, Eq, Ord)
 
 eventTypeW :: Event -> EventTypeW
@@ -407,6 +421,7 @@ eventTypeW e =
     EventTypeTownBell              _ -> EventTypeWTownBell
     EventTypeBackToWork            _ -> EventTypeWBackToWork
     EventTypeWall                  _ -> EventTypeWWall
+    EventTypeVillOnRepairable        _ -> EventTypeWVillOnRepairable
 
 class EventActingObjects a where
   eventActingObjects :: a -> [ObjectId]
@@ -443,6 +458,7 @@ instance EventActingObjects EventType where
   eventActingObjects (EventTypeTownBell e) = eventActingObjects e
   eventActingObjects (EventTypeBackToWork e) = eventActingObjects e
   eventActingObjects (EventTypeWall e) = eventActingObjects e
+  eventActingObjects (EventTypeVillOnRepairable e) = eventActingObjects e
 
 instance EventActingObjects EventMove where
   eventActingObjects EventMove{..} =  map toObjectId eventMoveUnits
@@ -452,6 +468,9 @@ instance EventActingObjects EventAttack where
 
 instance EventActingObjects EventGather where
   eventActingObjects EventGather{..} =  map toObjectId eventGatherGatherers
+
+instance EventActingObjects EventVillOnRepairable where
+  eventActingObjects EventVillOnRepairable{..} =  map toObjectId eventVillOnRepairableVills
 
 instance EventActingObjects EventGatherRelic where
   eventActingObjects EventGatherRelic{..} =  map toObjectId eventGatherRelicGatherers
