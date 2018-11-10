@@ -12,6 +12,8 @@ import Control.Monad.State.Strict
 import Data.Proxy(Proxy(..))
 import qualified RIO.HashMap as HM
 import Data.List.NonEmpty(NonEmpty(..))
+import qualified Data.List.NonEmpty as NE
+import qualified RIO.List as L
 
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
@@ -32,7 +34,7 @@ newtype ReferencesObjectIdx = ReferencesObjectIdx ObjectId deriving (Eq, Ord, Sh
 eventReferencesObjectIdx :: Event -> [ReferencesObjectIdx]
 eventReferencesObjectIdx = map ReferencesObjectIdx . referencesObjectIds
 
-newtype EventObjectIdAssignmentIdx = EventObjectIdAssignmentIdx ObjectId deriving (Eq, Ord, Show)
+newtype EventObjectIdAssignmentIdx = EventObjectIdAssignmentIdx{objectIdFromEventObjectIdAssignmentIdx ::  ObjectId} deriving (Eq, Ord, Show)
 eventObjectIdAssignmentIdx :: Event -> [EventObjectIdAssignmentIdx]
 eventObjectIdAssignmentIdx Event{..} =
   case eventType of
@@ -45,15 +47,19 @@ objectPlacedByGameIdx :: Object -> ObjectPlacedByGameIdx
 objectPlacedByGameIdx = ObjectPlacedByGameIdx . objectPlacedByGame
 
 
+newtype EventTrainedObjectTypeIdx = EventTrainedObjectTypeIdx ObjectType deriving (Eq, Ord, Show)
+
+eventTrainedObjectTypeIdx :: Event -> Maybe EventTrainedObjectTypeIdx
+eventTrainedObjectTypeIdx = fmap EventTrainedObjectTypeIdx . eventTrainObjectType
 
 eventActingObjectsIdx :: Event -> [ObjectId]
 eventActingObjectsIdx = eventActingObjects
 
+otRestrictWIdx :: Object -> OTRestrictW
+otRestrictWIdx = otRestrictToOtRestrictW . getObjectRestrict
 
-
-
-makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'objectPlacedByGameIdx, 'otRestrictToRestrictions]
-makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx]
+makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'objectPlacedByGameIdx, 'otRestrictToRestrictions, 'otRestrictWIdx]
+makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx, 'eventTrainedObjectTypeIdx]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
 data GameState = GameState {
@@ -175,6 +181,7 @@ updateObject o = do
 
 addRealEvent :: Command -> Maybe PlayerId -> EventType -> Sim ()
 addRealEvent c mP et = modify' $ \ss ->
+
   let gs = gameState ss
       e = Event {
             eventId = EventId $ IxSet.size (events gs) + 1
@@ -194,24 +201,61 @@ updateEvent e = do
   pure e
 
 
-
-
-findEventsRangeForObjectCreation :: ObjectId -> Maybe ObjectType -> Sim EventSet
-findEventsRangeForObjectCreation oid mOt  = do
+eventsPriorToObjectCreation :: (ToObjectId o) => o -> Sim EventSet
+eventsPriorToObjectCreation o = do
   eSet <- getEventSet
-  let restrictPreviousEvents = not $  mOt `elem` [Just OT_TownCenter]  -- town centers seem to be assigned an id when they are actually built?
-  let definitelyAfter = IxSet.getGTE (ReferencesObjectIdx oid) eSet
+
+  let definitelyAfter = IxSet.getGTE (ReferencesObjectIdx $ toObjectId o) eSet
       firstEvent = headMaybe $ IxSet.toAscList (Proxy :: Proxy EventId) definitelyAfter
-      definitelyBefore = IxSet.getLT (EventObjectIdAssignmentIdx oid) eSet
-      lastEvent = if restrictPreviousEvents then headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) definitelyBefore else Nothing
-  let finalSet =
-        case firstEvent of
-          Nothing -> eSet
-          Just e -> IxSet.getLT (eventId e) eSet
+  case firstEvent of
+    Nothing -> pure eSet
+    Just e -> pure $ IxSet.getLT (eventId e) eSet
+
+findEventsRangeForObjectCreation :: (ToObjectId o) => o  -> Maybe (NonEmpty ObjectType) -> Sim EventSet
+findEventsRangeForObjectCreation o mOt  = do
+  eventsPriorSet <- eventsPriorToObjectCreation o
+  let restrictPreviousEvents = case mOt of
+                                  -- these seem to be assigned an id when they are actually built?
+                                 Just ot -> length (L.intersect [OT_TownCenter] (NE.toList ot) ) < 1
+                                 Nothing -> True
+  lastEvent <- if restrictPreviousEvents
+    then do
+      definitelyBefore <- fmap (IxSet.getLT (EventObjectIdAssignmentIdx $ toObjectId o)) $ getEventSet
+      pure $ headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) definitelyBefore
+    else pure Nothing
   pure $
     case lastEvent of
-      Nothing -> finalSet
-      Just e -> IxSet.getGT (eventId e) finalSet
+      Nothing -> eventsPriorSet
+      Just e -> IxSet.getGT (eventId e) eventsPriorSet
+
+findUnconsumedBuildOrWallEventsForObject :: Object -> Sim [Event]
+findUnconsumedBuildOrWallEventsForObject o = do
+  preEvents <- findEventsRangeForObjectCreation (objectId o) (getObjectTypes o)
+  let buildEvents = filter (isNothing . eventLinkedBuilding) $ IxSet.toList $ (ixsetGetIn [EventTypeWBuild, EventTypeWWall]) preEvents
+      restrictByPlayer =
+        case objectPlayer o of
+          Nothing -> buildEvents
+          Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
+      restrictByType =
+        case getObjectTypes o of
+          Nothing -> restrictByPlayer
+          Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
+  pure restrictByType
+
+findUnconsumedTrainEventsForObject:: Object -> Sim [Event]
+findUnconsumedTrainEventsForObject o = do
+  preEvents <- eventsPriorToObjectCreation (objectId o)
+  let trainEvents = filter (\e -> isNothing (eventLinkedUnit e) && isNothing (eventConsumedWithUnit e)) $ IxSet.toList $ (ixsetGetIn [EventTypeWTrain]) preEvents
+      restrictByPlayer =
+        case objectPlayer o of
+          Nothing -> trainEvents
+          Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) trainEvents
+      restrictByType =
+        case getObjectTypes o of
+          Nothing -> restrictByPlayer
+          Just bts -> filter (\e -> eventTrainUnitObjectType e `elem` (NE.toList bts)) restrictByPlayer
+  pure restrictByType
+
 
 
 updateObjectWithMaybePlayerIfNone :: Object -> Maybe PlayerId -> Sim Object
@@ -219,7 +263,8 @@ updateObjectWithMaybePlayerIfNone o Nothing = pure o
 updateObjectWithMaybePlayerIfNone o (Just pid) = updateObjectWithPlayerIfNone o pid
 
 updateObjectWithPlayerIfNone :: Object -> PlayerId -> Sim Object
-updateObjectWithPlayerIfNone o pid =
-  case objectPlayer o of
-    Nothing -> updateObject $ setObjectPlayer o (Just pid)
-    Just _ -> pure o
+updateObjectWithPlayerIfNone o pid = do
+  let no = setObjectPlayer o (Just pid)
+  if no == o
+    then pure o
+    else updateObject no

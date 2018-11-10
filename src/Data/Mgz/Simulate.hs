@@ -7,7 +7,8 @@ import RIO
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
-import qualified Data.List.NonEmpty as NE
+import qualified RIO.List.Partial as L.Partial
+--import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
 import qualified Data.Text.Lazy.Builder as TL
@@ -56,7 +57,12 @@ simulate RecInfo{..} = do
   logInfo "Linking build commands with buildings"
   let s4 = gameState $ execState (replicateM 3 linkBuildingsToCommands) (SimState 0 s3 HM.empty)
 
-  pure $ s4
+  logInfo "Linking train commands with units"
+  let s5 = gameState $ execState (replicateM 3 (linkUnitsToTrainCommands False)) (SimState 0 s4 HM.empty)
+
+  let s6 = gameState $ execState ((linkUnitsToTrainCommands True)) (SimState 0 s5 HM.empty)
+
+  pure $ s6
 
 
 initialiseGameState :: Header -> Sim ()
@@ -113,14 +119,14 @@ makeSimpleInferences = do
   unknownUnits <- fmap (IxSet.getLT OTRestrictionIsMilitaryUnit . IxSet.getEQ ObjectTypeWUnit) $ getObjectSet
   void $ mapM inferUnitType $ IxSet.toList unknownUnits
 
-  unknownBuildings <- fmap (IxSet.getLT OTRestrictionIsNotActableByMilitary . IxSet.getEQ ObjectTypeWBuilding) $ getObjectSet
+  unknownBuildings <- fmap (IxSet.getGT OTRestrictWKnown . IxSet.getEQ ObjectTypeWBuilding) $ getObjectSet
   void $ mapM inferBuildingType $ IxSet.toList unknownBuildings
 
   unplayerEvents <- fmap (IxSet.getEQ (Nothing :: Maybe PlayerId)) $ getEventSet
   void $ mapM inferPlayerForEvent $ IxSet.toList unplayerEvents
 
-  allEvents <- fmap (IxSet.getGT (Nothing :: Maybe PlayerId)) $ getEventSet
-  void $ mapM inferPlayerForObjects $ IxSet.toList allEvents
+  eventsWithPlayer <- fmap (IxSet.getGT (Nothing :: Maybe PlayerId)) $ getEventSet
+  void $ mapM inferPlayerForObjects $ IxSet.toList eventsWithPlayer
 
 
   primaryEvents <- fmap (IxSet.getEQ EventTypeWPrimary) $ getEventSet
@@ -128,6 +134,11 @@ makeSimpleInferences = do
 
   garrisonAndRepairEvents <- fmap (ixsetGetIn [EventTypeWRepair, EventTypeWGarrison, EventTypeWUngarrison]) $ getEventSet
   void $ mapM inferPlayerEtcForRepairGarrison $ IxSet.toList garrisonAndRepairEvents
+
+-- , OTRestrictionIsGarrisonable, OTRestrictionIsUngarrisonable
+
+  unknownRepairables <- fmap (ixsetGetIn [OTRestrictionIsRepairable] . IxSet.getEQ ObjectTypeWUnknown) $ getObjectSet
+  void $ mapM inferIsRepairableBuilding $ IxSet.toList unknownRepairables
 
   pure ()
   where
@@ -194,6 +205,17 @@ makeSimpleInferences = do
         [x] -> void $ updateWithObjectType o x
         xs -> void $ updateWithObjectTypes o $ nonEmptyPartial xs
 
+    inferIsRepairableBuilding :: Object -> Sim ()
+    inferIsRepairableBuilding o = do
+      allEventsPrior <- eventsPriorToObjectCreation o
+      let eventsToLookAt = case objectPlayer o of
+                            Nothing -> allEventsPrior
+                            Just pid -> IxSet.getEQ (Just pid) allEventsPrior
+      -- there were no train events that could have created this repairable so it must be a building
+      if IxSet.null $ ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) repairableUnits) eventsToLookAt
+        then void $ updateWithRestriction o OTRestrictionIsBuilding
+        else pure ()
+
     inferDetailForEvent :: Event -> Sim ()
     inferDetailForEvent e@Event{..} = do
       mEt <-
@@ -254,7 +276,7 @@ makeSimpleInferences = do
 
     construeAsAttack :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsAttack pId t actors p =
-      if isObjectEnemy pId t && or (map ((==) ObjectTypeWUnit . objectTypeW) actors)
+      if isObjectEnemy pId t -- this doesn't take into account trade carts/cogs going to enemy markets/docks
         then do
          void $ (flip mapM) actors $ \b -> updateWithRestriction b OTRestrictionCanAttack
 
@@ -299,36 +321,21 @@ linkBuildingsToCommands = do
   where
     assignBasedOnBuildOrders :: Object -> Sim ()
     assignBasedOnBuildOrders o = do
-      preEvents <- findEventsRangeForObjectCreation (objectId o) (getObjectType o)
-      let buildEvents = filter (isNothing . eventBuildBuilding . extractEventBuild  ) $ IxSet.toList $ (IxSet.getEQ EventTypeWBuild) preEvents
-          restrictByPlayer =
-            case objectPlayer o of
-              Nothing -> buildEvents
-              Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
-          restrictByType =
-            case getObjectTypes o of
-              Nothing -> restrictByPlayer
-              Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
-
-      foundE <- case restrictByType of
+      possibleEvents <- findUnconsumedBuildOrWallEventsForObject o
+      foundE <- case possibleEvents of
          [] -> do
-          traceM $ "\n\nImpossible - this building was never placed?"
-          traceShowM $ o
-          void $ mapM debugBuildEvent $ buildEvents
-          pure Nothing
+            traceM $ "\n\nImpossible - this building was never placed?"
+            traceShowM $ o
+            allBuildEventsPrior <- fmap (IxSet.toList . IxSet.getEQ EventTypeWBuild) $  findEventsRangeForObjectCreation o Nothing
+            void $ mapM debugBuildEvent $ allBuildEventsPrior
+            pure Nothing
          [x] -> pure . Just $ x
-         _xs -> do
-          --traceM $ "\n\n"
-          --traceShowM $ o
-          --void $ mapM debugBuildEvent $ _xs
-          pure Nothing
-          --error "multiple possible build events found"
-
+         _ -> pure Nothing
       case foundE of
         Nothing -> do
          -- we can't find the specific event, but maybe we can assign some info
-         let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible restrictByType
-             possibleTypes = L.nub $ map eventBuildBuildingObjectType restrictByType
+         let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible possibleEvents
+             possibleTypes = L.nub $ map eventBuildBuildingObjectType possibleEvents
 
          o' <- case possiblePlayers of
                  [p] -> updateObjectWithPlayerIfNone o p
@@ -339,25 +346,50 @@ linkBuildingsToCommands = do
            [ot] -> void $ updateObject $ setObjectType o' ot
            _ -> void $ updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
 
+         case (possiblePlayers, possibleTypes, possibleEvents) of
+            ([pid], [_], e1:[e2]) -> do -- all the same player and type and exactly two events
+              deleteEvents <- fmap (IxSet.toList . IxSet.getEQ EventTypeWDelete . IxSet.getEQ (Just pid)) $ eventsPriorToObjectCreation o
+              case filter (\e -> eventId e > eventId e1 && eventId e < eventId e2) deleteEvents of
+                [del] -> do
+                  -- link the del event object with the first event
+                  deletedObj <- lookupObjectOrFail $ getEventDeleteObjectId del
+                  if isBuilding deletedObj || objectTypeW deletedObj == ObjectTypeWUnknown
+                    then do
+                      linkBuildingToEvent deletedObj e1
+                      linkBuildingToEvent o e2
+                    else pure ()
+
+                [] -> -- there are no relevant delete events - we know that this building definitely came from one of these orders so we will pick the first one (in cases where buildings were destroyed this might be wrong)
+                  linkBuildingToEvent o e1
+                _ ->  pure () -- for now we won't do anything with this - with map info we could be sure at this point so we'll leave it for now
+            _ -> pure ()
+              -- same - map info would probably get most of the rest of these - we can also compare timing if there are exactly two events for two players or whatever
+             -- traceM "\n\n"
+             -- traceShowM o
+             -- void $ mapM debugBuildEvent $ possibleEvents
+
+
+
         Just e ->
         -- there is only one possible build event - we can link these together
           linkBuildingToEvent o e
 
     linkBuildingToEvent :: Object -> Event -> Sim ()
     linkBuildingToEvent o e = do
-      let eBuild = extractEventBuild e
       o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
       o'' <- case eventPlayerResponsible e of
                Just p -> updateObjectWithPlayerIfNone o' p
                Nothing -> pure o'
 
-      void $ updateEvent $ e{eventType = EventTypeBuild eBuild{eventBuildBuilding = Just (buildingId . asBuilding $ o)}}
+      void $ updateEvent $ setEventLinkedBuilding e (buildingId . asBuilding $ o'')
       void $ updateObject $ setBuildingPlaceEvent o'' $ Just (eventId e)
       pure ()
-    debugBuildEvent :: Event -> Sim ()
-    debugBuildEvent e = do
-      tl <- renderEvent e
-      traceM $ TL.toStrict $ TL.toLazyText tl
+
+
+debugBuildEvent :: Event -> Sim ()
+debugBuildEvent e = do
+  tl <- renderEvent e
+  traceM $ TL.toStrict $ TL.toLazyText tl
 
 
 
@@ -370,4 +402,66 @@ linkBuildingsToCommands = do
 
 
 
+
+linkUnitsToTrainCommands :: Bool -> Sim ()
+linkUnitsToTrainCommands consumeEvents = do
+  unitsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnit) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
+  void $ mapM assignBasedOnTrainOrders $  filter (isNothing . getUnitTrainEvent) unitsMissingInfo
+  makeSimpleInferences
+  where
+    assignBasedOnTrainOrders :: Object -> Sim ()
+    assignBasedOnTrainOrders o = do
+      possibleEvents <- findUnconsumedTrainEventsForObject o
+      foundE <- case possibleEvents of
+         [] -> do
+            traceM $ "\n\nImpossible - this unit was never trained?"
+            traceShowM $ o
+            allTrainEventsPrior <- fmap (IxSet.toList . IxSet.getEQ EventTypeWTrain) $  findEventsRangeForObjectCreation o Nothing
+            void $ mapM debugBuildEvent $ allTrainEventsPrior
+            pure Nothing
+         [x] -> pure . Just $ x
+         _ -> pure Nothing
+      case foundE of
+        Nothing -> do
+          case (consumeEvents, restrictToLast5Minutes possibleEvents) of
+            (True, (e:_)) -> do
+              -- we are just consuming the earliest matching event
+              o' <- if (isNothing $ getObjectType o)
+                then updateObject $ setObjectTypes o $ nonEmptyPartial $ L.nub $ map eventTrainUnitObjectType possibleEvents
+                else pure $ o
+
+              void $ updateEvent $ setEventConsumedWithUnit e (unitId . asUnit $ o')
+              --void $ updateObject $ setUnitTrainEvent o'' $ Just (eventId e)
+
+            (_, _) -> do
+               -- we can't find the specific event, but maybe we can assign some info
+               let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible possibleEvents
+                   possibleTypes = L.nub $ map eventTrainUnitObjectType possibleEvents
+
+               o' <- case possiblePlayers of
+                       [p] -> updateObjectWithPlayerIfNone o p
+                       _ -> pure o
+
+               case possibleTypes of
+                 [] -> traceM $ "No possible types found!"
+                 [ot] -> void $ updateObject $ setObjectType o' ot
+                 _ -> void $ updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
+        Just e ->
+        -- there is only one possible train event - we can link these together
+          linkUnitToEvent o e
+    restrictToLast5Minutes :: [Event] -> [Event]
+    restrictToLast5Minutes es =
+      let mostRecent = L.Partial.head $ L.reverse $ L.sortBy (compare `on` eventTick) es
+      in filter (\e -> eventTick e > (eventTick mostRecent - 4000) ) es
+
+    linkUnitToEvent :: Object -> Event -> Sim ()
+    linkUnitToEvent o e = do
+      o' <- updateObject $ setObjectType o $ eventTrainUnitObjectType e
+      o'' <- case eventPlayerResponsible e of
+               Just p -> updateObjectWithPlayerIfNone o' p
+               Nothing -> pure o'
+
+      void $ updateEvent $ setEventLinkedUnit e (unitId . asUnit $ o'')
+      void $ updateObject $ setUnitTrainEvent o'' $ Just (eventId e)
+      pure ()
 

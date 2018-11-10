@@ -48,7 +48,9 @@ renderEvent :: Event -> Sim  TL.Builder
 renderEvent e@Event{..} = do
   d <- detail
   p <- renderPlayer eventPlayerResponsible
-  let assignedIds = if (length $ eventObjectIdAssignmentIdx e) > 0 then " assignedIds" <> displayShowB (eventObjectIdAssignmentIdx e) else ""
+  let assignedIds = if (length $ eventObjectIdAssignmentIdx e) > 0
+                      then " [AssignedIds: " <> ( renderMany $ map (displayShowT . objectIdToInt .  objectIdFromEventObjectIdAssignmentIdx) (eventObjectIdAssignmentIdx e)) <> "]"
+                      else ""
   pure $ simOrReal <> " " <> rPad 9 (eventIdToInt eventId) <> rPad 12 p <> d <> assignedIds
   where
 
@@ -79,7 +81,7 @@ renderEvent e@Event{..} = do
           pure $ "Attacked a " <> t <> " with " <> u <> " at " <> renderPos eventAttackPos
         (EventTypeMove (EventMove{..})) -> do
           u <- renderUnits eventMoveUnits
-          pure $ "Moved a " <> u <> " to " <> renderPos eventMovePos
+          pure $ "Moved " <> u <> " to " <> renderPos eventMovePos
         (EventTypeMilitaryDisposition (EventMilitaryDisposition{..})) -> do
           u <- renderUnits eventMilitaryDispositionUnits
           let (mt, tos) = case eventMilitaryDispositionType of
@@ -220,7 +222,7 @@ renderUnits = renderObjects
 renderObjects :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderObjects [] = pure "NO OBJECTS"
 renderObjects is = do
-  us <- mapM (\i -> renderObjectWithOptions i False True) is
+  us <- mapM (\i -> renderObjectWithOptions i False False) is
   let ts = map TL.toLazyText us
       types = L.sort . L.nub $ ts
       rs = map (\t -> (displayShowTL $ length (filter ((==) t) ts)) <> " " <> t <> "s") types

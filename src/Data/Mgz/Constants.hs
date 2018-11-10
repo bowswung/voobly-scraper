@@ -59,6 +59,7 @@ buildingToTrainUnitMap = HM.fromList [
   , (OT_SiegeWorkshop, [OT_Mangonel,OT_BatteringRam])
   , (OT_Dock, [OT_FishingShip])
   , (OT_Monastery, [OT_Monk])
+  , (OT_Market, [OT_TradeCart])
   ]
 
 trainUnitToBuildingMap ::  HM.HashMap ObjectType [ObjectType]
@@ -160,7 +161,7 @@ restrictionToObjectTypes OTRestrictionIsGatherer = [OT_Villager, OT_FishingShip]
 restrictionToObjectTypes OTRestrictionIsLandResourceGatherer = [OT_Villager]
 restrictionToObjectTypes OTRestrictionIsBuilder = [OT_Villager]
 restrictionToObjectTypes OTRestrictionIsMonk = [OT_Monk]
-restrictionToObjectTypes OTRestrictionIsRepairable = allBuildings ++ allSiege ++ allBoats
+restrictionToObjectTypes OTRestrictionIsRepairable = allBuildings ++ allSiege ++ allBoats ++ (concat $ catMaybes [HM.lookup OT_Market buildingToTrainUnitMap])
 restrictionToObjectTypes OTRestrictionIsUngarrisonable = L.nub $ restrictionToObjectTypes OTRestrictionIsGarrisonable ++ HM.keys buildingToTrainUnitMap
 restrictionToObjectTypes OTRestrictionIsGarrisonable = L.nub $ garrisonableBuildings ++ garrisonableSiege ++ garrisonableBoats
 restrictionToObjectTypes OTRestrictionIsBuilding = allBuildings
@@ -175,6 +176,9 @@ restrictionToObjectTypes OTRestrictionIsMapObject = allMapObjects
 restrictionToObjectTypes OTRestrictionCanAttackGround = attackGroundUnits
 restrictionToObjectTypes OTRestrictionIsNotDropoffBuilding = filter (\o -> not $ o `elem` dropoffBuildings) $ allBuildings
 
+
+repairableUnits :: [ObjectType]
+repairableUnits = L.nub $ L.intersect (restrictionToObjectTypes OTRestrictionIsRepairable) allUnits
 
 
 restrictionToObjectTypeMap :: HM.HashMap OTRestriction [ObjectType]
@@ -230,10 +234,10 @@ allBuildings :: [ObjectType]
 allBuildings = L.nub $ HM.keys buildingToTechMap ++ HM.keys buildingToTrainUnitMap ++ nonActingBuildings ++ attackingBuildings
 
 nonActingBuildings :: [ObjectType]
-nonActingBuildings = [OT_House, OT_Farm]
+nonActingBuildings = [OT_House, OT_Farm, OT_PalisadeWall, OT_StoneWall, OT_PalisadeGate, OT_Gate]
 
 allSiege :: [ObjectType]
-allSiege = concat $ catMaybes [HM.lookup OT_SiegeWorkshop buildingToTrainUnitMap]
+allSiege = [OT_Trebuchet] ++ (concat $ catMaybes [HM.lookup OT_SiegeWorkshop buildingToTrainUnitMap])
 
 allBoats :: [ObjectType]
 allBoats = concat $ catMaybes [HM.lookup OT_Dock buildingToTrainUnitMap]

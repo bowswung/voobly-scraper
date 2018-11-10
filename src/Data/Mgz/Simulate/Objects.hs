@@ -14,11 +14,15 @@ module Data.Mgz.Simulate.Objects(
   newObject,
   OTRestriction(..),
   OTRestrict(..),
+  OTRestrictW(..),
+  otRestrictToOtRestrictW,
   setObjectType,
   getObjectType,
   getObjectTypes,
   getBuildingPlaceEvent,
   setBuildingPlaceEvent,
+  setUnitTrainEvent,
+  getUnitTrainEvent,
   setObjectTypes,
   restrictObjectType,
   --exactlyMeetsRestriction,
@@ -103,6 +107,8 @@ objectId = _objectId
 objectPlayer :: Object -> Maybe PlayerId
 objectPlayer = _objectPlayer
 
+
+
 setObjectPlayer :: Object -> Maybe PlayerId -> Object
 setObjectPlayer o m =
   case (objectPlayer o, m) of
@@ -111,7 +117,7 @@ setObjectPlayer o m =
     (Just _, Nothing) -> o -- ignore this for now
     (Just old, Just new) | old == new -> o
                          | isPlayerGaia old -> o  --sheep stealing
-                         | otherwise -> error "PlayerId CHANGED - stolen sheep or conversion? "
+                         | otherwise -> error $ "Cannot change pid from " ++ show old ++ " to " ++ show new ++ " in object "++ show o
 
 objectInfo :: Object -> ObjectInfo
 objectInfo = _objectInfo
@@ -132,7 +138,7 @@ objectFromObjectRaw oRaw@ObjectRaw{..} =
       o = bo{_objectPlacedByGame = True}
       mo = MapObject (OTRestrictKnown objectRawUnitId) objectRawOwner oRaw
   in (case objectRawType of
-       70 -> o {_objectInfo = ObjectInfoUnit $ Unit $ OTRestrictKnown objectRawUnitId}
+       70 -> o {_objectInfo = ObjectInfoUnit $ Unit (OTRestrictKnown objectRawUnitId) Nothing}
        80 -> o {_objectInfo = ObjectInfoBuilding $ Building (OTRestrictKnown objectRawUnitId) (Just objectRawPos) Nothing}
        _ -> o {_objectInfo = ObjectInfoMapObject mo},
        mo
@@ -145,8 +151,19 @@ data OTRestrict =
   | OTRestrictNone
   deriving (Show, Eq, Ord)
 
+-- this is used for inddexing
+data OTRestrictW =
+    OTRestrictWKnown
+  | OTRestrictWOneOf
+  | OTRestrictWGeneral
+  | OTRestrictWNone
+  deriving (Show, Eq, Ord)
 
-
+otRestrictToOtRestrictW :: OTRestrict -> OTRestrictW
+otRestrictToOtRestrictW (OTRestrictKnown _) = OTRestrictWKnown
+otRestrictToOtRestrictW (OTRestrictOneOf _) = OTRestrictWOneOf
+otRestrictToOtRestrictW (OTRestrictGeneral _) = OTRestrictWGeneral
+otRestrictToOtRestrictW (OTRestrictNone) = OTRestrictWNone
 
 objectTypeW :: Object -> ObjectTypeW
 objectTypeW o =
@@ -165,12 +182,14 @@ data ObjectInfo =
   deriving (Show, Eq, Ord)
 
 data Unit = Unit {
-  unitType :: OTRestrict
+  unitType :: OTRestrict,
+  unitTrainEvent :: Maybe EventId
 } deriving (Show, Eq, Ord)
 
 newUnit :: Unit
 newUnit = Unit {
     unitType = OTRestrictGeneral $ singleNonEmpty OTRestrictionIsUnit
+  , unitTrainEvent = Nothing
   }
 
 data Building = Building {
@@ -185,6 +204,7 @@ newBuilding = Building {
   , buildingPos = Nothing
   , buildingPlaceEvent = Nothing
   }
+
 
 
 getBuildingPlaceEvent :: Object -> Maybe (EventId)
@@ -203,6 +223,21 @@ extractBuilding Object{..} =
     ObjectInfoBuilding b -> b
     _ -> error "Could not extract building"
 
+getUnitTrainEvent :: Object -> Maybe (EventId)
+getUnitTrainEvent = unitTrainEvent . extractUnit
+
+setUnitTrainEvent :: Object -> Maybe (EventId) -> Object
+setUnitTrainEvent o e =
+  let b = extractUnit o
+      newB = b{unitTrainEvent = e}
+  in o{_objectInfo = ObjectInfoUnit newB}
+
+
+extractUnit :: Object -> Unit
+extractUnit Object{..} =
+  case _objectInfo of
+    ObjectInfoUnit b -> b
+    _ -> error "Could not extract unit"
 
 data MapObject = MapObject {
   mapObjectType :: OTRestrict,
@@ -223,6 +258,9 @@ class ToObjectId a where
 
 instance ToObjectId ObjectId where
   toObjectId = id
+
+instance ToObjectId Object where
+  toObjectId = objectId
 
 instance ToObjectId UnitId where
   toObjectId (UnitId i) = i

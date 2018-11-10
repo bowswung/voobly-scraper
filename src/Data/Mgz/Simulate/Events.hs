@@ -89,17 +89,25 @@ data EventBuild = EventBuild {
   eventBuildBuilding :: Maybe BuildingId
 }  deriving (Show, Eq, Ord)
 
-extractEventBuild :: Event -> EventBuild
-extractEventBuild e =
+eventLinkedBuilding :: Event -> Maybe BuildingId
+eventLinkedBuilding e =
   case eventType e of
-    EventTypeBuild b -> b
-    _ -> error " Could not extract build event "
+    EventTypeBuild b -> eventBuildBuilding b
+    _ -> Nothing
+
+setEventLinkedBuilding :: Event -> BuildingId -> Event
+setEventLinkedBuilding e bid =
+  case eventType e of
+    EventTypeBuild b -> e{eventType = EventTypeBuild b{eventBuildBuilding = Just bid}}
+    EventTypeWall _ -> e -- we don't do this yet
+    _ -> error  $ "Could not setEventLinkedBuilding on this kind of event " ++ show e
 
 eventBuildBuildingObjectType :: Event -> ObjectType
 eventBuildBuildingObjectType Event{..} =
   case eventType of
     EventTypeBuild e -> eventBuildingType e
-    _ -> error " Only use this for events previously validated as build events"
+    EventTypeWall e -> eventWallBuildingType e
+    _ -> error " Only use this for events previously validated as build or wall events"
 data MilitaryDisposition =
     MilitaryDispositionStance Int
   | MilitaryDispositionFormation Int
@@ -129,8 +137,41 @@ data EventPatrol = EventPatrol {
 data EventTrain = EventTrain {
   eventTrainBuilding :: BuildingId,
   eventTrainType :: ObjectType,
-  eventTrainNumber :: Int
+  eventTrainNumber :: Int,
+  eventTrainUnit :: Maybe UnitId,
+  eventTrainConsumeWithUnit :: Maybe UnitId
 }  deriving (Show, Eq, Ord)
+
+eventLinkedUnit :: Event -> Maybe UnitId
+eventLinkedUnit e =
+  case eventType e of
+    EventTypeTrain b -> eventTrainUnit b
+    _ -> Nothing
+
+eventConsumedWithUnit :: Event -> Maybe UnitId
+eventConsumedWithUnit e =
+  case eventType e of
+    EventTypeTrain b -> eventTrainConsumeWithUnit b
+    _ -> Nothing
+
+setEventConsumedWithUnit :: Event -> UnitId -> Event
+setEventConsumedWithUnit e bid =
+  case eventType e of
+    EventTypeTrain b -> e{eventType = EventTypeTrain b{eventTrainConsumeWithUnit = Just bid}}
+    _ -> error  $ "Could not setEventLinkedUnit on this kind of event " ++ show e
+
+
+setEventLinkedUnit :: Event -> UnitId -> Event
+setEventLinkedUnit e bid =
+  case eventType e of
+    EventTypeTrain b -> e{eventType = EventTypeTrain b{eventTrainUnit = Just bid}}
+    _ -> error  $ "Could not setEventLinkedUnit on this kind of event " ++ show e
+
+eventTrainUnitObjectType :: Event -> ObjectType
+eventTrainUnitObjectType Event{..} =
+  case eventType of
+    EventTypeTrain e -> eventTrainType e
+    _ -> error " Only use this for events previously validated as train events"
 
 data EventResearch = EventResearch {
   eventResearchBuilding :: BuildingId,
@@ -155,6 +196,12 @@ data EventRally = EventRally {
 data EventDelete = EventDelete {
   eventDeleteObjectId :: ObjectId
 }  deriving (Show, Eq, Ord)
+
+getEventDeleteObjectId :: Event -> ObjectId
+getEventDeleteObjectId e =
+  case eventType e of
+    EventTypeDelete b -> eventDeleteObjectId b
+    _ -> error " Only use this for events previously validated as delete events"
 
 data EventResign = EventResign {
   eventResignPlayerId :: PlayerId
@@ -191,7 +238,6 @@ data EventToggleGate = EventToggleGate {
 
 data EventGarrison = EventGarrison {
   eventGarrisonTargetId :: ObjectId,
-  eventGarrisonPos :: Pos,
   eventGarrisonGarrisonedUnits :: [UnitId]
 }  deriving (Show, Eq, Ord)
 

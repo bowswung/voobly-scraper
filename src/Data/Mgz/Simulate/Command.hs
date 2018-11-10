@@ -162,6 +162,8 @@ instance RunCommand CommandTrain where
         eventTrainBuilding = buildingId building
       , eventTrainType = commandTrainUnitType
       , eventTrainNumber = commandTrainNumber
+      , eventTrainUnit = Nothing
+      , eventTrainConsumeWithUnit = Nothing
       }
 instance RunCommand CommandStop where
   runCommand CommandStop{..} = do
@@ -281,13 +283,22 @@ instance RunCommand CommandGarrison where
                  pure . Just $ EventTypeGarrison $ EventGarrison {
                     eventGarrisonTargetId = objectId target
                   , eventGarrisonGarrisonedUnits = map unitId units
-                  , eventGarrisonPos = commandGarrisonPos
                   }
 
           else do
-            traceShowM $ c
-            traceM $ "Weird garrison command!!!"
-            pure Nothing
+            case (commandGarrisonTargetId, commandGarrisonSelectedIds, commandGarrisonPos) of
+              (Nothing, [_guessT], Pos 0 0) -> pure Nothing
+                   -- I am tempted to interpret this as garissoning a building to itself, but it may  not be!
+                   --units <- mapM getUnit commandGarrisonSelectedIds
+               {-    target <- getObject guessT
+                   pure . Just $ EventTypeGarrison $ EventGarrison {
+                           eventGarrisonTargetId = objectId target
+                         , eventGarrisonGarrisonedUnits = []
+                       }-}
+              _ -> do
+                traceShowM $ c
+                traceM $ "Weird garrison command!!!"
+                pure Nothing
 
 
 instance RunCommand CommandSell where
