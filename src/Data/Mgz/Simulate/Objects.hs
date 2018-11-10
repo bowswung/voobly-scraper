@@ -41,6 +41,7 @@ module Data.Mgz.Simulate.Objects(
   isObjectEnemy,
   isMilitaryUnit,
   isUnit,
+  isMonk,
   isObjectFriend,
   isBuilding,
   isNotDropoffBuilding
@@ -428,9 +429,11 @@ isVillager a = getObjectType a == Just OT_Villager
 isHerdable :: HasObjectRestrict a => a -> Bool
 isHerdable a = getObjectType a == Just OT_Sheep
 
-
 isBuilding :: HasObjectRestrict a => a -> Bool
 isBuilding a = anyMeetsRestriction a OTRestrictionIsBuilding
+
+isMonk :: HasObjectRestrict a => a -> Bool
+isMonk a = anyMeetsRestriction a OTRestrictionIsMonk
 
 isUnit :: HasObjectRestrict a => a -> Bool
 isUnit a = anyMeetsRestriction a OTRestrictionIsUnit

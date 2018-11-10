@@ -267,7 +267,7 @@ makeSimpleInferences = do
           case pId of
             Just thisPlayer ->
               --if military units primary something unknown then it must belong to the enemy
-              if or (map isMilitaryUnit actors) && objectPlayer t == Nothing
+              if or (map (\a -> isMilitaryUnit a && (not $ isMonk a)) actors) && objectPlayer t == Nothing
                 then do
                   let otherPlayer = if thisPlayer == PlayerId 1 then PlayerId 2 else PlayerId 1 -- @team
                   void $ updateObjectWithPlayerIfNone t otherPlayer

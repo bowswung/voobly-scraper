@@ -199,7 +199,7 @@ updateEvent e = do
 findEventsRangeForObjectCreation :: ObjectId -> Maybe ObjectType -> Sim EventSet
 findEventsRangeForObjectCreation oid mOt  = do
   eSet <- getEventSet
-  let restrictPreviousEvents = not $  mOt `elem` [Just OT_TownCenter, Just OT_Monastery]  -- town centers seem to be assigned an id when they are actually built?
+  let restrictPreviousEvents = not $  mOt `elem` [Just OT_TownCenter]  -- town centers seem to be assigned an id when they are actually built?
   let definitelyAfter = IxSet.getGTE (ReferencesObjectIdx oid) eSet
       firstEvent = headMaybe $ IxSet.toAscList (Proxy :: Proxy EventId) definitelyAfter
       definitelyBefore = IxSet.getLT (EventObjectIdAssignmentIdx oid) eSet
