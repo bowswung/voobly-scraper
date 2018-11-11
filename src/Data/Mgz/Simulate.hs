@@ -7,7 +7,6 @@ import RIO
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
-import qualified RIO.List.Partial as L.Partial
 --import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
@@ -53,6 +52,7 @@ simulate RecInfo{..} = do
   logInfo "Making simple inferences"
 
   let s3 = gameState $ execState makeSimpleInferences (SimState 0 s2 HM.empty)
+
 
   logInfo "Linking build commands with buildings"
   let s4 = gameState $ execState (replicateM 3 linkBuildingsToCommands) (SimState 0 s3 HM.empty)
@@ -310,9 +310,37 @@ makeSimpleInferences = do
         else pure Nothing
 
 
+
+linkBuildingsBasedOnPosition :: Sim ()
+linkBuildingsBasedOnPosition = do
+  unknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
+  void $ mapM assignBasedOnPosition unknownObjects
+  remainingUnknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
+  void  $ (flip mapM) remainingUnknownObjects $ \o -> do
+    case objectPosHistory o of
+      [] -> pure ()
+      _ -> do
+        possibleEvents <- fmap (\es -> filter (\e -> eventTypeW e == EventTypeWWall) es) $ findUnconsumedBuildOrWallEventsForObject o
+        if null possibleEvents
+          then void $ updateWithRestriction o OTRestrictionIsUnit -- if it wasn't placed as a building, and it has a position, then it must be a unit... or a wall...
+          else pure ()
+  where
+    assignBasedOnPosition :: Object -> Sim ()
+    assignBasedOnPosition o = do
+      possibleEvents <- fmap (\es -> filter (\e -> eventTypeW e == EventTypeWBuild) es) $ findUnconsumedBuildOrWallEventsForObject o
+
+      case filter (\e -> (not . null $ objectPosHistory o) && and (map  (\p -> p == getEventBuildPos e)  $ objectPosHistory o))  possibleEvents of
+        [] -> pure ()
+        [e] -> linkBuildingToEvent o e
+        es -> do
+          void $ mapM debugBuildEvent es
+
+
+
 linkBuildingsToCommands :: Sim ()
 linkBuildingsToCommands = do
 
+  linkBuildingsBasedOnPosition
   buildingsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWBuilding) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
   void $ mapM assignBasedOnBuildOrders $  filter (isNothing . getBuildingPlaceEvent) buildingsMissingInfo
 
@@ -374,16 +402,16 @@ linkBuildingsToCommands = do
         -- there is only one possible build event - we can link these together
           linkBuildingToEvent o e
 
-    linkBuildingToEvent :: Object -> Event -> Sim ()
-    linkBuildingToEvent o e = do
-      o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
-      o'' <- case eventPlayerResponsible e of
-               Just p -> updateObjectWithPlayerIfNone o' p
-               Nothing -> pure o'
+linkBuildingToEvent :: Object -> Event -> Sim ()
+linkBuildingToEvent o e = do
+  o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
+  o'' <- case eventPlayerResponsible e of
+           Just p -> updateObjectWithPlayerIfNone o' p
+           Nothing -> pure o'
 
-      void $ updateEvent $ setEventLinkedBuilding e (buildingId . asBuilding $ o'')
-      void $ updateObject $ setBuildingPlaceEvent o'' $ Just (eventId e)
-      pure ()
+  void $ updateEvent $ setEventLinkedBuilding e (buildingId . asBuilding $ o'')
+  void $ updateObject $ setBuildingPlaceEvent o'' $ Just (eventId e)
+  pure ()
 
 
 debugBuildEvent :: Event -> Sim ()
@@ -423,7 +451,7 @@ linkUnitsToTrainCommands consumeEvents = do
          _ -> pure Nothing
       case foundE of
         Nothing -> do
-          case (consumeEvents, restrictToLast5Minutes possibleEvents) of
+          case (consumeEvents, possibleEvents) of
             (True, (e:_)) -> do
               -- we are just consuming the earliest matching event
               o' <- if (isNothing $ getObjectType o)
@@ -449,10 +477,6 @@ linkUnitsToTrainCommands consumeEvents = do
         Just e ->
         -- there is only one possible train event - we can link these together
           linkUnitToEvent o e
-    restrictToLast5Minutes :: [Event] -> [Event]
-    restrictToLast5Minutes es =
-      let mostRecent = L.Partial.head $ L.reverse $ L.sortBy (compare `on` eventTick) es
-      in filter (\e -> eventTick e > (eventTick mostRecent - 4000) ) es
 
     linkUnitToEvent :: Object -> Event -> Sim ()
     linkUnitToEvent o e = do

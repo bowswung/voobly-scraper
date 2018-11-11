@@ -49,6 +49,11 @@ objectPlacedByGameIdx = ObjectPlacedByGameIdx . objectPlacedByGame
 
 newtype EventTrainedObjectTypeIdx = EventTrainedObjectTypeIdx ObjectType deriving (Eq, Ord, Show)
 
+newtype EventTick = EventTick Int  deriving (Eq, Ord, Show)
+
+eventTickIdx :: Event -> EventTick
+eventTickIdx = EventTick . eventTick
+
 eventTrainedObjectTypeIdx :: Event -> Maybe EventTrainedObjectTypeIdx
 eventTrainedObjectTypeIdx = fmap EventTrainedObjectTypeIdx . eventTrainObjectType
 
@@ -59,7 +64,7 @@ otRestrictWIdx :: Object -> OTRestrictW
 otRestrictWIdx = otRestrictToOtRestrictW . getObjectRestrict
 
 makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'objectPlacedByGameIdx, 'otRestrictToRestrictions, 'otRestrictWIdx]
-makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx, 'eventTrainedObjectTypeIdx]
+makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx, 'eventTrainedObjectTypeIdx, 'eventTickIdx]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
 data GameState = GameState {
@@ -202,7 +207,7 @@ updateEvent e = do
 
 
 eventsPriorToObjectCreation :: (ToObjectId o) => o -> Sim EventSet
-eventsPriorToObjectCreation o = do
+eventsPriorToObjectCreation o  = do
   eSet <- getEventSet
 
   let definitelyAfter = IxSet.getGTE (ReferencesObjectIdx $ toObjectId o) eSet
@@ -242,9 +247,15 @@ findUnconsumedBuildOrWallEventsForObject o = do
           Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
   pure restrictByType
 
+restrictToLastXSeconds :: EventSet -> Int -> EventSet
+restrictToLastXSeconds eSet s =
+  case headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) eSet of
+    Nothing -> eSet
+    Just e -> IxSet.getGT (EventTick $ eventTick e - (s * 1000)) eSet
+
 findUnconsumedTrainEventsForObject:: Object -> Sim [Event]
 findUnconsumedTrainEventsForObject o = do
-  preEvents <- eventsPriorToObjectCreation (objectId o)
+  preEvents <- fmap ((flip restrictToLastXSeconds) $ 4 * 60) $ eventsPriorToObjectCreation (objectId o)
   let trainEvents = filter (\e -> isNothing (eventLinkedUnit e) && isNothing (eventConsumedWithUnit e)) $ IxSet.toList $ (ixsetGetIn [EventTypeWTrain]) preEvents
       restrictByPlayer =
         case objectPlayer o of

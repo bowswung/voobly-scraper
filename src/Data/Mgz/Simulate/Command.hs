@@ -70,7 +70,8 @@ instance RunCommand CommandPrimary where
   runCommand CommandPrimary{..} = do
     case commandPrimaryTargetId of
       Just tid -> do
-        target <- getObject tid
+        targetBase <- getObject tid
+        target <- updateObject $ addObjectPos targetBase commandPrimaryPos
         uids <- getSelectedObjectIds commandPrimaryUnitIds commandPrimaryPlayerId
         objs <- getObjectsForPlayer uids commandPrimaryPlayerId
         pure . Just . EventTypePrimary $ EventPrimary {
@@ -185,7 +186,10 @@ instance RunCommand CommandRally where
     targetObj <-
       case (commandRallyTargetObject, commandRallyTargetType) of
         (Nothing, Nothing) -> pure Nothing
-        (Just o, Just t) -> fmap Just $ getObjectAsType o t
+        (Just o, Just t) -> do
+          tar <- getObjectAsType o t
+          tar' <- updateObject $ addObjectPos tar commandRallyPos
+          pure $ Just tar'
         (a, b) -> error $ "Rally command with inconsistent targets " ++ show (a,b)
 
     buildings <- mapM getBuilding commandRallySelectedBuildingIds

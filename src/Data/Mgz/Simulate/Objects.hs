@@ -37,6 +37,8 @@ module Data.Mgz.Simulate.Objects(
   objectPlayer,
   objectInfo,
   objectPlacedByGame,
+  objectPosHistory,
+  addObjectPos,
   setObjectPlayer,
   objectTypeW,
   isVillager,
@@ -98,7 +100,8 @@ data Object = Object {
   _objectId :: ObjectId,
   _objectPlayer :: Maybe PlayerId,
   _objectInfo :: ObjectInfo,
-  _objectPlacedByGame :: Bool
+  _objectPlacedByGame :: Bool,
+  _objectPosHistory :: [Pos]
 } deriving (Show, Eq, Ord)
 
 
@@ -107,7 +110,11 @@ objectId = _objectId
 objectPlayer :: Object -> Maybe PlayerId
 objectPlayer = _objectPlayer
 
+objectPosHistory :: Object -> [Pos]
+objectPosHistory = _objectPosHistory
 
+addObjectPos :: Object -> Pos -> Object
+addObjectPos o p = o{_objectPosHistory = objectPosHistory o ++ [p]}
 
 setObjectPlayer :: Object -> Maybe PlayerId -> Object
 setObjectPlayer o m =
@@ -130,12 +137,13 @@ newObject i p = Object {
   , _objectPlayer = p
   , _objectInfo = ObjectInfoUnknown OTRestrictNone
   , _objectPlacedByGame = False
+  , _objectPosHistory = []
   }
 
 objectFromObjectRaw :: ObjectRaw -> (Object, MapObject)
 objectFromObjectRaw oRaw@ObjectRaw{..} =
   let bo = newObject objectRawObjectId (Just objectRawOwner)
-      o = bo{_objectPlacedByGame = True}
+      o = bo{_objectPlacedByGame = True, _objectPosHistory = [objectRawPos]}
       mo = MapObject (OTRestrictKnown objectRawUnitId) objectRawOwner oRaw
   in (case objectRawType of
        70 -> o {_objectInfo = ObjectInfoUnit $ Unit (OTRestrictKnown objectRawUnitId) Nothing}

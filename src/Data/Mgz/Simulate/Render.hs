@@ -29,7 +29,8 @@ renderAllObjects = do
   ss <- get
   t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \o -> do
     oRen <- renderObject $ objectId o
-    pure $ rPad 6 (objectIdToInt $ objectId o) <> rPad 10 (renderObjectTypeW $ objectTypeW o) <> oRen
+    let poss = "    " <> renderMany (map (TL.toStrict .  TL.toLazyText . renderPos) (objectPosHistory o))
+    pure $ rPad 6 (objectIdToInt $ objectId o) <> rPad 10 (renderObjectTypeW $ objectTypeW o) <> oRen <> poss
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
 
 

@@ -95,6 +95,12 @@ eventLinkedBuilding e =
     EventTypeBuild b -> eventBuildBuilding b
     _ -> Nothing
 
+getEventBuildPos :: Event -> Pos
+getEventBuildPos e =
+  case eventType e of
+    EventTypeBuild b -> eventBuildPos b
+    _ -> error $ "getEventBuildPos only usable for build events"
+
 setEventLinkedBuilding :: Event -> BuildingId -> Event
 setEventLinkedBuilding e bid =
   case eventType e of
