@@ -37,7 +37,8 @@ data Event =  Event {
   eventTick :: Int,
   eventKind :: EventKind,
   eventPlayerResponsible :: Maybe PlayerId,
-  eventType :: EventType
+  eventType :: EventType,
+  eventAssignObjectIds :: [ObjectId] -- this is the earliest event at which these ids could have been assigned
 } deriving (Show, Eq, Ord)
 
 data EventMove = EventMove {
@@ -163,6 +164,14 @@ data EventTrain = EventTrain {
   eventTrainConsumeWithUnit :: Maybe UnitId
 }  deriving (Show, Eq, Ord)
 
+eventTrainBuildingPartial :: Event -> BuildingId
+eventTrainBuildingPartial e =
+  case eventType e of
+    EventTypeTrain b -> eventTrainBuilding b
+    _ -> error $ "Only use eventTrainBuildingPartial on event trains, not " ++ show e
+
+
+
 eventLinkedUnit :: Event -> Maybe UnitId
 eventLinkedUnit e =
   case eventType e of
@@ -200,6 +209,12 @@ data EventResearch = EventResearch {
   eventResearchBuilding :: BuildingId,
   eventResearchTech :: Tech
 }  deriving (Show, Eq, Ord)
+
+eventResearchBuildingMaybe :: Event -> Maybe BuildingId
+eventResearchBuildingMaybe e =
+  case eventType e of
+    EventTypeResearch b -> pure $  eventResearchBuilding b
+    _ -> Nothing
 
 data EventStopGeneral = EventStopGeneral {
   eventStopSelectedIds :: [ObjectId]

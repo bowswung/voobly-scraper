@@ -38,8 +38,8 @@ newtype EventObjectIdAssignmentIdx = EventObjectIdAssignmentIdx{objectIdFromEven
 eventObjectIdAssignmentIdx :: Event -> [EventObjectIdAssignmentIdx]
 eventObjectIdAssignmentIdx Event{..} =
   case eventType of
-    EventTypeBuild b -> map EventObjectIdAssignmentIdx $   catMaybes [fmap toObjectId $ eventBuildBuilding b]
-    _ -> []
+    EventTypeBuild b -> map EventObjectIdAssignmentIdx $ eventAssignObjectIds ++ catMaybes [fmap toObjectId $ eventBuildBuilding b]
+    _ -> map EventObjectIdAssignmentIdx $ eventAssignObjectIds
 
 -- this is basically the same as EventObjectIdAssignmentIdx at the moment
 newtype EventBuildLinkedBuildingIdx = EventBuildLinkedBuildingIdx BuildingId deriving (Eq, Ord, Show)
@@ -88,6 +88,10 @@ newtype EventSinglePosIdx = EventSinglePosIdx Pos deriving (Eq, Ord, Show)
 eventSinglePosIdx :: Event -> Maybe EventSinglePosIdx
 eventSinglePosIdx = fmap EventSinglePosIdx . getSingleEventPos
 
+newtype EventResearchBuildingIdx = EventResearchBuildingIdx BuildingId deriving (Eq, Ord, Show)
+eventResearchBuildingIdx :: Event -> Maybe EventResearchBuildingIdx
+eventResearchBuildingIdx = fmap EventResearchBuildingIdx . eventResearchBuildingMaybe
+
 
 eventActingObjectsIdx :: Event -> [ObjectId]
 eventActingObjectsIdx = eventActingObjects
@@ -116,6 +120,7 @@ makeSimpleIxSet "EventSet" ''Event ['eventId
                                    , 'eventTrainLinkedUnitIdx
                                    , 'eventBuildObjectTypeIdx
                                    , 'eventSinglePosIdx
+                                   , 'eventResearchBuildingIdx
                                    ]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
@@ -245,6 +250,7 @@ addRealEvent c mP et = do
           , eventKind = EventKindReal c
           , eventPlayerResponsible = mP
           , eventType = et
+          , eventAssignObjectIds = []
           }
   modify' $ \ss ->
     let gs = gameState ss
@@ -282,13 +288,13 @@ findEventsRangeForObjectCreation o mOt  = do
                                   -- these seem to be assigned an id when they are actually built?
                                  Just ot -> length (L.intersect [OT_TownCenter] (NE.toList ot) ) < 1
                                  Nothing -> True
-  lastEvent <- if restrictPreviousEvents
+  lastEventDefinitelyBefore <- if restrictPreviousEvents
     then do
-      definitelyBefore <- fmap (IxSet.getLT (EventObjectIdAssignmentIdx $ toObjectId o)) $ getEventSet
-      pure $ headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) definitelyBefore
+      eventsThatWereDefinitelyBefore <- fmap (IxSet.getLT (EventObjectIdAssignmentIdx $ toObjectId o)) $ getEventSet
+      pure $ headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) eventsThatWereDefinitelyBefore
     else pure Nothing
   pure $
-    case lastEvent of
+    case lastEventDefinitelyBefore of
       Nothing -> eventsPriorSet
       Just e -> IxSet.getGT (eventId e) eventsPriorSet
 
@@ -309,18 +315,52 @@ restrictToLastXSeconds s eSet =
     Nothing -> eSet
     Just e -> IxSet.getGT (EventTick $ eventTick e - (s * 1000)) eSet
 
-findUnconsumedTrainEventsForObject:: Object -> Sim EventSet
+findUnconsumedTrainEventsForObject:: Object -> Sim [Event]
 findUnconsumedTrainEventsForObject o = do
   preEvents <- eventsPriorToObjectCreation (objectId o)
-  pure $
-     restrictToLastXSeconds (2 * 60) .
-     maybe id (\ots -> ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) $ NE.toList ots)) (getObjectTypes o) .
-     maybe id (IxSet.getEQ . Just) (objectPlayer o) .
-     IxSet.getEQ (Nothing :: Maybe EventTrainLinkedUnitIdx) .
-     IxSet.getEQ EventTypeWTrain $
-     preEvents
+  let maybeTrainEvents =
+       IxSet.toList .
+       restrictToLastXSeconds (4 * 60) .
+       maybe id (\ots -> ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) $ NE.toList ots)) (getObjectTypes o) .
+       maybe id (IxSet.getEQ . Just) (objectPlayer o) .
+       IxSet.getEQ (Nothing :: Maybe EventTrainLinkedUnitIdx) .
+       IxSet.getEQ EventTypeWTrain $
+       preEvents
 
+      uniqueBuildings = L.nub $ map eventTrainBuildingPartial maybeTrainEvents
+  -- this is not very efficient - we need a better way of generalising about event timing effectively
+  eventsRoundCreation <- findEventsRangeForObjectCreation o (getObjectTypes o)
+  hmVals <-
+    case headMaybe $ IxSet.toAscList (Proxy :: Proxy EventId) eventsRoundCreation of
+      Just earliestEvent -> fmap catMaybes $ (flip mapM) uniqueBuildings $ \bid -> do
+          recentRes <- mostRecentResearchEventAtBuildingBefore (eventId earliestEvent) bid
+          case recentRes of
+            Just ee -> pure . Just $ (bid, ee)
+            Nothing -> pure Nothing
+      Nothing -> pure []
+  let hm = HM.fromList hmVals
+  pure $ filter (not . shouldDropEvent hm) maybeTrainEvents
 
+debugEventShort :: Event -> Sim ()
+debugEventShort e = do
+  traceShowM $ displayShowT (eventIdToInt . eventId $ e) <> "  " <> displayShowT (eventTypeW e)
+
+shouldDropEvent :: HM.HashMap BuildingId EventId -> Event -> Bool
+shouldDropEvent hm e =
+  case HM.lookup (eventTrainBuildingPartial e) hm of
+    Nothing -> False
+    Just dropLowerThan -> (eventId e) < dropLowerThan
+
+mostRecentResearchEventAtBuildingBefore :: EventId -> BuildingId -> Sim (Maybe EventId)
+mostRecentResearchEventAtBuildingBefore eid bid = do
+  mEvents <- fmap (
+       IxSet.getEQ (Just . EventResearchBuildingIdx $ bid) .
+       IxSet.getLT eid .
+       IxSet.getEQ EventTypeWResearch)
+       getEventSet
+  case headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) mEvents of
+    Just e -> pure . Just . eventId $ e
+    Nothing -> pure Nothing
 
 
 updateObjectWithMaybePlayerIfNone :: Object -> Maybe PlayerId -> Sim Object

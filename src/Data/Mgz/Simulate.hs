@@ -14,6 +14,7 @@ import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy as TL
 import qualified RIO.HashMap as HM
+import Data.Proxy(Proxy(..))
 import Data.Maybe (fromJust)
 
 
@@ -55,14 +56,20 @@ simulate RecInfo{..} = do
       logInfo $ "Linking buildings based on position"
       linkBuildingsBasedOnPosition
 
+      logInfo "Assigning object ids to events"
+      assignObjectIdsToEvents
+
       logInfo "Making simple inferences"
       makeSimpleInferences
 
       logInfo "Linking build commands with buildings"
       linkBuildingsToCommands -- this might give more info if repeated -- I'm not 100% sure
 
+      logInfo "Assigning object ids to events"
+      assignObjectIdsToEvents
+
       logInfo "Linking train commands with units"
-      void $ replicateM 3 (linkUnitsToTrainCommands False)
+      void $ replicateM 5 (linkUnitsToTrainCommands False)
 
       logInfo "Guessing at remaining unit types"
       linkUnitsToTrainCommands True
@@ -128,6 +135,19 @@ placeMapObject mo p = do
     where
       canOverlap :: MapObject -> Bool
       canOverlap = canObjectTypeOverlap . objectRawUnitId . mapObjectOriginal
+
+
+assignObjectIdsToEvents :: Sim ()
+assignObjectIdsToEvents = do
+  objectsForwards <- fmap (IxSet.toAscList (Proxy :: Proxy ObjectId) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
+  void $ mapM assignObjectIdToEvent objectsForwards
+  where
+    assignObjectIdToEvent :: Object -> Sim ()
+    assignObjectIdToEvent o = do
+      mustBeAfterOrAt <- fmap  (headMaybe . IxSet.toDescList (Proxy :: Proxy EventId)  . IxSet.getLT (EventObjectIdAssignmentIdx $ objectId o)) getEventSet
+      case mustBeAfterOrAt of
+        Just e -> void $ updateEvent $ e{eventAssignObjectIds = L.sort . L.nub $ eventAssignObjectIds e ++ [objectId o]}
+        Nothing -> traceM $ "Found object id that was never referenced"
 
 
 
@@ -465,7 +485,7 @@ linkUnitsToTrainCommands forceConsumeEvents = do
   where
     assignBasedOnTrainOrders :: Object -> Sim ()
     assignBasedOnTrainOrders o = do
-      possibleEvents <- fmap IxSet.toList $ findUnconsumedTrainEventsForObject o
+      possibleEvents <- findUnconsumedTrainEventsForObject o
       foundE <- case possibleEvents of
          [] -> do
             traceM $ "\n\nImpossible - this unit was never trained?"

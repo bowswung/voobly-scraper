@@ -86,9 +86,10 @@ newtype ObjectBuilding = ObjectBuilding{_objectFromObjectBuilding :: Object} -- 
 objectFromObjectBuilding :: ObjectBuilding -> Object
 objectFromObjectBuilding = _objectFromObjectBuilding
 
-newtype BuildingId = BuildingId ObjectId deriving (Show, Eq, Ord)
+newtype BuildingId = BuildingId ObjectId deriving (Show, Eq, Ord, Generic)
 buildingId :: ObjectBuilding -> BuildingId
 buildingId (ObjectBuilding o) = BuildingId . objectId $ o
+instance Hashable BuildingId
 
 asBuilding :: Object -> ObjectBuilding
 asBuilding o =

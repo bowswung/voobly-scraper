@@ -17,7 +17,8 @@ import qualified Data.ByteString.Base16 as Base16
 
 import Data.Mgz.Constants
 
-newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord) -- object id from rec file - we don't know anything about it!
+newtype ObjectId = ObjectId {objectIdToInt :: Int} deriving (Show, Eq, Ord, Generic) -- object id from rec file - we don't know anything about it!
+instance Hashable ObjectId
 
 
 
