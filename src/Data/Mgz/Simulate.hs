@@ -14,6 +14,7 @@ import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy as TL
 import qualified RIO.HashMap as HM
+import Data.Maybe (fromJust)
 
 
 import Data.Mgz.Simulate.Objects
@@ -25,44 +26,60 @@ import Data.Mgz.Utils
 
 
 
-replay :: HasLogFunc env => GameState -> RIO env ()
+replay :: GameState -> RIO LogFunc ()
 replay gs = do
   logInfo "Rendering to file"
-  let r = evalState renderEvents (SimState 0 gs HM.empty)
+  r <- evalStateT renderEvents (SimState 0 gs HM.empty)
   liftIO $ TL.writeFile "/code/voobly-scraper/simHistory" $  r
-  let r2 = evalState renderAllObjects (SimState 0 gs HM.empty)
+  r2 <- evalStateT renderAllObjects (SimState 0 gs HM.empty)
   liftIO $ TL.writeFile "/code/voobly-scraper/simObjects" $  r2
   logInfo "Render done"
 
 
-simulate :: HasLogFunc env => RecInfo -> RIO env GameState
+simulate :: RecInfo -> RIO LogFunc GameState
 simulate RecInfo{..} = do
   logInfo "Start simulating"
-  logInfo "Recreating initial game state"
 
-  let
-      s0 = emptyGameState recInfoHeader
-      s1 = gameState $ execState (initialiseGameState recInfoHeader) (SimState 0 s0 HM.empty)
+  let initialGS  = emptyGameState recInfoHeader
+      initialSS = SimState 0 initialGS HM.empty
+  fmap gameState $
+    (flip execStateT) initialSS $ do
+      logInfo "Recreating initial game state"
+      initialiseGameState recInfoHeader
 
-  logInfo "Building base events"
+      logInfo "Building base events"
+      void $ mapM buildBasicEvents recInfoOps
+      totalEventsSize <- fmap IxSet.size getEventSet
+      logInfo $ "Total events added: " <> displayShow totalEventsSize
 
-  let s2 = gameState $ execState (mapM buildBasicEvents recInfoOps) (SimState 0 s1 HM.empty)
-  logInfo $ "Total events added: " <> displayShow (IxSet.size . events $ s2)
+      logInfo $ "Linking buildings based on position"
+      linkBuildingsBasedOnPosition
 
-  logInfo "Making simple inferences"
+      logInfo "Making simple inferences"
+      makeSimpleInferences
 
-  let s3 = gameState $ execState makeSimpleInferences (SimState 0 s2 HM.empty)
+      logInfo "Linking build commands with buildings"
+      linkBuildingsToCommands -- this might give more info if repeated -- I'm not 100% sure
+
+      logInfo "Linking train commands with units"
+      void $ replicateM 3 (linkUnitsToTrainCommands False)
+
+      logInfo "Guessing at remaining unit types"
+      linkUnitsToTrainCommands True
+
+      objectsNotPlaced <- fmap (IxSet.getEQ (ObjectPlacedByGameIdx False)) getObjectSet
+      logInfo $ displayShow (IxSet.size objectsNotPlaced) <>  " objects were found"
+      logInfo $ displayShow (IxSet.size $ IxSet.getGT (Nothing :: Maybe PlayerId) $ objectsNotPlaced) <>  " were assigned to a player"
+      logInfo $ displayShow (IxSet.size $ IxSet.getEQ OTRestrictWKnown $ objectsNotPlaced) <>  " were assigned a known type"
+      logInfo $ displayShow (IxSet.size $ IxSet.getEQ OTRestrictWOneOf $ objectsNotPlaced) <>  " were assigned a range of known types"
+      logInfo $ displayShow (IxSet.size $ IxSet.getEQ OTRestrictWGeneral $ objectsNotPlaced) <>  " were restricted by their event involvement"
+      logInfo $ displayShow (IxSet.size $ IxSet.getEQ OTRestrictWNone $ objectsNotPlaced) <>  " could not have anything inferred about them"
+      logInfo $ "Of which: " <> displayShow (IxSet.size $ IxSet.getEQ (ObjectWasDeletedIdx True) . IxSet.getEQ OTRestrictWNone $ objectsNotPlaced) <>  " were deleted by players"
 
 
-  logInfo "Linking build commands with buildings"
-  let s4 = gameState $ execState (replicateM 3 linkBuildingsToCommands) (SimState 0 s3 HM.empty)
 
-  logInfo "Linking train commands with units"
-  let s5 = gameState $ execState (replicateM 3 (linkUnitsToTrainCommands False)) (SimState 0 s4 HM.empty)
 
-  let s6 = gameState $ execState ((linkUnitsToTrainCommands True)) (SimState 0 s5 HM.empty)
 
-  pure $ s6
 
 
 initialiseGameState :: Header -> Sim ()
@@ -313,43 +330,49 @@ makeSimpleInferences = do
 
 linkBuildingsBasedOnPosition :: Sim ()
 linkBuildingsBasedOnPosition = do
-  unknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
-  void $ mapM assignBasedOnPosition unknownObjects
-  remainingUnknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
-  void  $ (flip mapM) remainingUnknownObjects $ \o -> do
-    case objectPosHistory o of
-      [] -> pure ()
-      _ -> do
-        possibleEvents <- fmap (\es -> filter (\e -> eventTypeW e == EventTypeWWall) es) $ findUnconsumedBuildOrWallEventsForObject o
-        if null possibleEvents
-          then void $ updateWithRestriction o OTRestrictionIsUnit -- if it wasn't placed as a building, and it has a position, then it must be a unit... or a wall...
-          else pure ()
-  where
-    assignBasedOnPosition :: Object -> Sim ()
-    assignBasedOnPosition o = do
-      possibleEvents <- fmap (\es -> filter (\e -> eventTypeW e == EventTypeWBuild) es) $ findUnconsumedBuildOrWallEventsForObject o
+  unlinkedObjects <- fmap (IxSet.toList .  ixsetGetIn [ObjectTypeWUnknown, ObjectTypeWBuilding]) $ findUnlinkedObjects
+  logInfo $ (displayShow $ length unlinkedObjects) <> " unlinked objects found"
+  void $ mapM assignBasedOnPosition unlinkedObjects
 
-      case filter (\e -> (not . null $ objectPosHistory o) && and (map  (\p -> p == getEventBuildPos e)  $ objectPosHistory o))  possibleEvents of
+  remainingUnknownObjects <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnknown)) $ findUnlinkedObjects
+  void $ mapM classifyAsNotBuilding remainingUnknownObjects
+  makeSimpleInferences
+  where
+    classifyAsNotBuilding :: Object -> Sim ()
+    classifyAsNotBuilding o =
+      case objectPosHistory o of
         [] -> pure ()
-        [e] -> linkBuildingToEvent o e
-        es -> do
-          void $ mapM debugBuildEvent es
+        _ -> do
+          possibleEvents <- fmap (IxSet.getEQ EventTypeWWall) $ findUnconsumedBuildOrWallEventsForObject o
+          if IxSet.null possibleEvents
+            then void $ updateWithRestriction o OTRestrictionIsUnit -- if it wasn't placed as a building or wall, and it has a position, then it must be a unit...
+            else pure ()
+              -- we could probably do some pretty confident guessing at wall objects here, particularly because wall commands generate a nice sequential sequence of object ids, but we won't bother for now
+
+
+    assignBasedOnPosition :: Object -> Sim ()
+    assignBasedOnPosition o =
+      case objectPosHistory o of
+        [p] -> do
+          possibleEvents <- fmap (IxSet.toList . IxSet.getEQ (Just . EventSinglePosIdx $ p ) .  IxSet.getEQ EventTypeWBuild) $ findUnconsumedBuildOrWallEventsForObject o
+          case possibleEvents of
+            [e] -> linkBuildingToEvent o e
+            _ -> pure ()
+        _ -> pure ()
 
 
 
 linkBuildingsToCommands :: Sim ()
 linkBuildingsToCommands = do
-
-  linkBuildingsBasedOnPosition
-  buildingsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWBuilding) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
-  void $ mapM assignBasedOnBuildOrders $  filter (isNothing . getBuildingPlaceEvent) buildingsMissingInfo
-
+  buildingsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWBuilding)) $ findUnlinkedObjects
+  logInfo $ (displayShow $ length buildingsMissingInfo) <> " unlinked buildings found"
+  void $ mapM assignBasedOnBuildOrders buildingsMissingInfo
   makeSimpleInferences
 
   where
     assignBasedOnBuildOrders :: Object -> Sim ()
     assignBasedOnBuildOrders o = do
-      possibleEvents <- findUnconsumedBuildOrWallEventsForObject o
+      possibleEvents <- fmap IxSet.toList $ findUnconsumedBuildOrWallEventsForObject o
       foundE <- case possibleEvents of
          [] -> do
             traceM $ "\n\nImpossible - this building was never placed?"
@@ -363,7 +386,7 @@ linkBuildingsToCommands = do
         Nothing -> do
          -- we can't find the specific event, but maybe we can assign some info
          let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible possibleEvents
-             possibleTypes = L.nub $ map eventBuildBuildingObjectType possibleEvents
+             possibleTypes = L.nub . catMaybes $ map eventBuildBuildingObjectType possibleEvents
 
          o' <- case possiblePlayers of
                  [p] -> updateObjectWithPlayerIfNone o p
@@ -404,7 +427,7 @@ linkBuildingsToCommands = do
 
 linkBuildingToEvent :: Object -> Event -> Sim ()
 linkBuildingToEvent o e = do
-  o' <- updateObject $ setObjectType o $ eventBuildBuildingObjectType e
+  o' <- updateObject $ setObjectType o $ fromJust $ eventBuildBuildingObjectType e
   o'' <- case eventPlayerResponsible e of
            Just p -> updateObjectWithPlayerIfNone o' p
            Nothing -> pure o'
@@ -432,14 +455,17 @@ debugBuildEvent e = do
 
 
 linkUnitsToTrainCommands :: Bool -> Sim ()
-linkUnitsToTrainCommands consumeEvents = do
-  unitsMissingInfo <- fmap (IxSet.toList .  IxSet.getEQ (ObjectTypeWUnit) . IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
-  void $ mapM assignBasedOnTrainOrders $  filter (isNothing . getUnitTrainEvent) unitsMissingInfo
+linkUnitsToTrainCommands forceConsumeEvents = do
+  unitsMissingInfo <- fmap (IxSet.toList .
+                            IxSet.getEQ (ObjectTypeWUnit)) $
+                            findUnlinkedObjects
+  logInfo $ (displayShow $ length unitsMissingInfo) <> " unlinked units found"
+  void $ mapM assignBasedOnTrainOrders $ unitsMissingInfo
   makeSimpleInferences
   where
     assignBasedOnTrainOrders :: Object -> Sim ()
     assignBasedOnTrainOrders o = do
-      possibleEvents <- findUnconsumedTrainEventsForObject o
+      possibleEvents <- fmap IxSet.toList $ findUnconsumedTrainEventsForObject o
       foundE <- case possibleEvents of
          [] -> do
             traceM $ "\n\nImpossible - this unit was never trained?"
@@ -451,7 +477,7 @@ linkUnitsToTrainCommands consumeEvents = do
          _ -> pure Nothing
       case foundE of
         Nothing -> do
-          case (consumeEvents, possibleEvents) of
+          case (forceConsumeEvents, possibleEvents) of
             (True, (e:_)) -> do
               -- we are just consuming the earliest matching event
               o' <- if (isNothing $ getObjectType o)
@@ -461,19 +487,23 @@ linkUnitsToTrainCommands consumeEvents = do
               void $ updateEvent $ setEventConsumedWithUnit e (unitId . asUnit $ o')
               --void $ updateObject $ setUnitTrainEvent o'' $ Just (eventId e)
 
-            (_, _) -> do
+            (False, (e:_)) -> do
                -- we can't find the specific event, but maybe we can assign some info
                let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible possibleEvents
                    possibleTypes = L.nub $ map eventTrainUnitObjectType possibleEvents
-
                o' <- case possiblePlayers of
                        [p] -> updateObjectWithPlayerIfNone o p
                        _ -> pure o
 
-               case possibleTypes of
-                 [] -> traceM $ "No possible types found!"
-                 [ot] -> void $ updateObject $ setObjectType o' ot
-                 _ -> void $ updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
+               o'' <- case possibleTypes of
+                      [ot] -> updateObject $ setObjectType o' ot
+                      _ -> updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
+               case (possiblePlayers, possibleTypes) of
+                 ([_], [_]) -> do
+                  -- we only have one type of train event and one player so we can just assign this to the first train event we  have (e). we can't eliminate all dangling train events but we can do fairly well with this approach it seems
+                  linkUnitToEvent o'' e
+                 _ -> pure ()
+            _ -> pure ()
         Just e ->
         -- there is only one possible train event - we can link these together
           linkUnitToEvent o e

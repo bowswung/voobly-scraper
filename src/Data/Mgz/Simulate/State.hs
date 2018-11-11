@@ -41,10 +41,33 @@ eventObjectIdAssignmentIdx Event{..} =
     EventTypeBuild b -> map EventObjectIdAssignmentIdx $   catMaybes [fmap toObjectId $ eventBuildBuilding b]
     _ -> []
 
+-- this is basically the same as EventObjectIdAssignmentIdx at the moment
+newtype EventBuildLinkedBuildingIdx = EventBuildLinkedBuildingIdx BuildingId deriving (Eq, Ord, Show)
+
+eventBuildLinkedBuildingIdx :: Event -> Maybe EventBuildLinkedBuildingIdx
+eventBuildLinkedBuildingIdx = fmap EventBuildLinkedBuildingIdx . eventLinkedBuilding
+
+
+newtype EventTrainLinkedUnitIdx = EventTrainLinkedUnitIdx UnitId deriving (Eq, Ord, Show)
+
+eventTrainLinkedUnitIdx :: Event -> Maybe EventTrainLinkedUnitIdx
+eventTrainLinkedUnitIdx = fmap EventTrainLinkedUnitIdx . eventLinkedUnit
+
 
 newtype ObjectPlacedByGameIdx = ObjectPlacedByGameIdx Bool deriving (Eq, Ord, Show)
 objectPlacedByGameIdx :: Object -> ObjectPlacedByGameIdx
 objectPlacedByGameIdx = ObjectPlacedByGameIdx . objectPlacedByGame
+
+
+newtype ObjectHasBuildOrTrainEventIdx = ObjectHasBuildOrTrainEventIdx Bool deriving (Eq, Ord, Show)
+objectHasBuildOrTrainEventIdx :: Object -> ObjectHasBuildOrTrainEventIdx
+objectHasBuildOrTrainEventIdx o = ObjectHasBuildOrTrainEventIdx $ isJust (getBuildingPlaceEvent o) || isJust (getUnitTrainEvent o)
+
+
+newtype ObjectWasDeletedIdx = ObjectWasDeletedIdx Bool deriving (Eq, Ord, Show)
+objectWasDeletedIdx :: Object -> ObjectWasDeletedIdx
+objectWasDeletedIdx = ObjectWasDeletedIdx . isJust . objectDeletedBy
+
 
 
 newtype EventTrainedObjectTypeIdx = EventTrainedObjectTypeIdx ObjectType deriving (Eq, Ord, Show)
@@ -57,14 +80,43 @@ eventTickIdx = EventTick . eventTick
 eventTrainedObjectTypeIdx :: Event -> Maybe EventTrainedObjectTypeIdx
 eventTrainedObjectTypeIdx = fmap EventTrainedObjectTypeIdx . eventTrainObjectType
 
+newtype EventBuildObjectTypeIdx = EventBuildObjectTypeIdx ObjectType deriving (Eq, Ord, Show)
+eventBuildObjectTypeIdx :: Event -> Maybe EventBuildObjectTypeIdx
+eventBuildObjectTypeIdx = fmap EventBuildObjectTypeIdx . eventBuildBuildingObjectType
+
+newtype EventSinglePosIdx = EventSinglePosIdx Pos deriving (Eq, Ord, Show)
+eventSinglePosIdx :: Event -> Maybe EventSinglePosIdx
+eventSinglePosIdx = fmap EventSinglePosIdx . getSingleEventPos
+
+
 eventActingObjectsIdx :: Event -> [ObjectId]
 eventActingObjectsIdx = eventActingObjects
 
 otRestrictWIdx :: Object -> OTRestrictW
 otRestrictWIdx = otRestrictToOtRestrictW . getObjectRestrict
 
-makeSimpleIxSet "ObjectSet" ''Object ['objectId, 'objectTypeW, 'objectPlacedByGameIdx, 'otRestrictToRestrictions, 'otRestrictWIdx]
-makeSimpleIxSet "EventSet" ''Event ['eventId, 'eventTypeW, 'eventActingObjectsIdx, 'eventPlayerResponsible, 'eventReferencesObjectIdx, 'eventObjectIdAssignmentIdx, 'eventTrainedObjectTypeIdx, 'eventTickIdx]
+makeSimpleIxSet "ObjectSet" ''Object ['objectId
+                                     , 'objectTypeW
+                                     , 'objectPlacedByGameIdx
+                                     , 'otRestrictToRestrictions
+                                     , 'otRestrictWIdx
+                                     , 'objectHasBuildOrTrainEventIdx
+                                     , 'objectWasDeletedIdx
+                                     , 'objectPlayer
+                                     ]
+makeSimpleIxSet "EventSet" ''Event ['eventId
+                                   , 'eventTypeW
+                                   , 'eventActingObjectsIdx
+                                   , 'eventPlayerResponsible
+                                   , 'eventReferencesObjectIdx
+                                   , 'eventObjectIdAssignmentIdx
+                                   , 'eventTrainedObjectTypeIdx
+                                   , 'eventTickIdx
+                                   , 'eventBuildLinkedBuildingIdx
+                                   , 'eventTrainLinkedUnitIdx
+                                   , 'eventBuildObjectTypeIdx
+                                   , 'eventSinglePosIdx
+                                   ]
 makeSimpleIxSet "MapTileSet" ''MapTile ['mapTileX, 'mapTileY, 'mapTileCombinedIdx]
 
 data GameState = GameState {
@@ -87,7 +139,7 @@ data SimState = SimState {
   lastUsedIds :: LastUsedIds
 }
 
-type Sim a = State SimState a
+type Sim a = StateT SimState (RIO LogFunc) a
 
 getSelectedObjectIds :: EitherInheritOrIds -> PlayerId -> Sim [ObjectId]
 getSelectedObjectIds (Left ()) pId = do
@@ -184,18 +236,20 @@ updateObject o = do
   pure o
 
 
-addRealEvent :: Command -> Maybe PlayerId -> EventType -> Sim ()
-addRealEvent c mP et = modify' $ \ss ->
-
-  let gs = gameState ss
-      e = Event {
-            eventId = EventId $ IxSet.size (events gs) + 1
-          , eventTick = ticks ss
+addRealEvent :: Command -> Maybe PlayerId -> EventType -> Sim Event
+addRealEvent c mP et = do
+  ssP <- get
+  let e = Event {
+            eventId = EventId $ IxSet.size (events $ gameState ssP) + 1
+          , eventTick = ticks ssP
           , eventKind = EventKindReal c
           , eventPlayerResponsible = mP
           , eventType = et
           }
-  in ss{gameState = gs{events = IxSet.insert e (events gs)}}
+  modify' $ \ss ->
+    let gs = gameState ss
+    in ss{gameState = gs{events = IxSet.insert e (events gs)}}
+  pure e
 
 
 updateEvent :: Event -> Sim Event
@@ -205,6 +259,11 @@ updateEvent e = do
     in ss{gameState = gs{events = IxSet.updateIx (eventId e) e (events gs)}}
   pure e
 
+
+findUnlinkedObjects :: Sim ObjectSet
+findUnlinkedObjects = fmap (
+  IxSet.getEQ (ObjectHasBuildOrTrainEventIdx False) .
+  IxSet.getEQ (ObjectPlacedByGameIdx False)) $ getObjectSet
 
 eventsPriorToObjectCreation :: (ToObjectId o) => o -> Sim EventSet
 eventsPriorToObjectCreation o  = do
@@ -233,39 +292,34 @@ findEventsRangeForObjectCreation o mOt  = do
       Nothing -> eventsPriorSet
       Just e -> IxSet.getGT (eventId e) eventsPriorSet
 
-findUnconsumedBuildOrWallEventsForObject :: Object -> Sim [Event]
+findUnconsumedBuildOrWallEventsForObject :: Object -> Sim EventSet
 findUnconsumedBuildOrWallEventsForObject o = do
   preEvents <- findEventsRangeForObjectCreation (objectId o) (getObjectTypes o)
-  let buildEvents = filter (isNothing . eventLinkedBuilding) $ IxSet.toList $ (ixsetGetIn [EventTypeWBuild, EventTypeWWall]) preEvents
-      restrictByPlayer =
-        case objectPlayer o of
-          Nothing -> buildEvents
-          Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) buildEvents
-      restrictByType =
-        case getObjectTypes o of
-          Nothing -> restrictByPlayer
-          Just bts -> filter (\e -> eventBuildBuildingObjectType e `elem` (NE.toList bts)) restrictByPlayer
-  pure restrictByType
+  pure $
+   maybe id (\ots -> ixsetGetIn (map (Just . EventBuildObjectTypeIdx) $ NE.toList ots)) (getObjectTypes o) .
+   maybe id (IxSet.getEQ . Just) (objectPlayer o) .
+   IxSet.getEQ (Nothing :: Maybe EventBuildLinkedBuildingIdx) .
+   ixsetGetIn [EventTypeWBuild, EventTypeWWall] $
+   preEvents
 
-restrictToLastXSeconds :: EventSet -> Int -> EventSet
-restrictToLastXSeconds eSet s =
+
+restrictToLastXSeconds :: Int -> EventSet -> EventSet
+restrictToLastXSeconds s eSet =
   case headMaybe $ IxSet.toDescList (Proxy :: Proxy EventId) eSet of
     Nothing -> eSet
     Just e -> IxSet.getGT (EventTick $ eventTick e - (s * 1000)) eSet
 
-findUnconsumedTrainEventsForObject:: Object -> Sim [Event]
+findUnconsumedTrainEventsForObject:: Object -> Sim EventSet
 findUnconsumedTrainEventsForObject o = do
-  preEvents <- fmap ((flip restrictToLastXSeconds) $ 4 * 60) $ eventsPriorToObjectCreation (objectId o)
-  let trainEvents = filter (\e -> isNothing (eventLinkedUnit e) && isNothing (eventConsumedWithUnit e)) $ IxSet.toList $ (ixsetGetIn [EventTypeWTrain]) preEvents
-      restrictByPlayer =
-        case objectPlayer o of
-          Nothing -> trainEvents
-          Just pid -> filter (\e -> eventPlayerResponsible e == Just pid) trainEvents
-      restrictByType =
-        case getObjectTypes o of
-          Nothing -> restrictByPlayer
-          Just bts -> filter (\e -> eventTrainUnitObjectType e `elem` (NE.toList bts)) restrictByPlayer
-  pure restrictByType
+  preEvents <- eventsPriorToObjectCreation (objectId o)
+  pure $
+     restrictToLastXSeconds (2 * 60) .
+     maybe id (\ots -> ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) $ NE.toList ots)) (getObjectTypes o) .
+     maybe id (IxSet.getEQ . Just) (objectPlayer o) .
+     IxSet.getEQ (Nothing :: Maybe EventTrainLinkedUnitIdx) .
+     IxSet.getEQ EventTypeWTrain $
+     preEvents
+
 
 
 

@@ -16,10 +16,14 @@ handleCommand c = do
   mEt <- runCommand c
   case mEt of
     Nothing -> pure ()
-    Just et -> addRealEvent c (commandPlayerId c) et
+    Just et -> do
+      newE <- addRealEvent c (commandPlayerId c) et
+      postCreateHandle c newE
 
 class RunCommand a where
   runCommand :: a -> Sim (Maybe EventType)
+  postCreateHandle :: a -> Event -> Sim ()
+  postCreateHandle _ _ = pure ()
 
 instance RunCommand Command where
   runCommand (CommandTypePrimary c) = runCommand c
@@ -50,6 +54,35 @@ instance RunCommand Command where
   runCommand (CommandTypeTownBell c) = runCommand c
   runCommand (CommandTypeBackToWork c) = runCommand c
   runCommand (CommandUnparsed _ _) = pure Nothing
+
+  postCreateHandle (CommandTypePrimary c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeMove c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeStance c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeGuard c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeFollow c) e = postCreateHandle c e
+  postCreateHandle (CommandTypePatrol c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeFormation c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeResearch c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeBuild c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeTrain c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeWaypoint c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeStop c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeRally c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeDelete c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeWall c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeResign c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeAttackGround c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeTribute c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeRepair c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeUngarrison c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeToggleGate c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeGarrison c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeSell c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeBuy c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeDropRelic c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeTownBell c) e = postCreateHandle c e
+  postCreateHandle (CommandTypeBackToWork c) e = postCreateHandle c e
+  postCreateHandle (CommandUnparsed _ _) _ = pure ()
 
 commandPlayerId :: Command -> Maybe PlayerId
 commandPlayerId (CommandTypePrimary CommandPrimary{..}) = Just commandPrimaryPlayerId
@@ -202,11 +235,12 @@ instance RunCommand CommandRally where
 instance RunCommand CommandDelete where
   runCommand CommandDelete{..} = do
     target <- getObjectForPlayer commandDeleteObjectId (Just commandDeletePlayerId)
-
     pure . Just $ EventTypeDelete $ EventDelete {
         eventDeleteObjectId = objectId target
       }
-
+  postCreateHandle CommandDelete{..} e = do
+    o <- lookupObjectOrFail commandDeleteObjectId
+    void $ updateObject $ setObjectDeletedBy o (eventId e)
 
 
 instance RunCommand CommandResign where

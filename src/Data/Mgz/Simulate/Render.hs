@@ -15,8 +15,7 @@ import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text as T
 import qualified Data.Text.Lazy as TL
 import qualified RIO.HashMap as HM
-
-
+import qualified Data.Duration as D
 
 import Data.Mgz.Simulate.Objects
 import Data.Mgz.Simulate.State
@@ -30,16 +29,26 @@ renderAllObjects = do
   t <- (flip mapM) (IxSet.toAscList (Proxy :: Proxy ObjectId) $ objects (gameState ss)) $ \o -> do
     oRen <- renderObject $ objectId o
     let poss = "    " <> renderMany (map (TL.toStrict .  TL.toLazyText . renderPos) (objectPosHistory o))
-    pure $ rPad 6 (objectIdToInt $ objectId o) <> rPad 10 (renderObjectTypeW $ objectTypeW o) <> oRen <> poss
+        del = case objectDeletedBy o of Nothing -> ""; Just e -> " Deleted by " <> displayShowB (eventIdToInt e)
+    pure $ rPad 6 (objectIdToInt $ objectId o) <> rPad 10 (renderObjectTypeW $ objectTypeW o) <> oRen <> del <> poss
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
 
 
+
+renderTick :: Int -> TL.Builder
+renderTick ticks  =
+  let n = (fromIntegral ticks) * D.ms
+      h = F.left 2 '0' $ displayShowB $ D.getHours n
+      m = F.left 2 '0' $ displayShowB $ D.getMinutes ((n - D.hour * (fromIntegral $ D.getHours n)))
+      s = F.left 2 '0' $ displayShowB $ D.getSeconds ((n - D.minute * (fromIntegral $ D.getMinutes n)))
+      ms = F.left 3 '0' $ displayShowB $ D.getMs ((n - D.oneSecond * (fromIntegral $ D.getSeconds n)))
+  in  h <> ":" <> m <> ":" <> s <> "." <> ms
 
 
 renderEvents :: Sim TL.Text
 renderEvents = do
   ss <- get
-  t <- mapM renderEvent $ IxSet.toAscList (Proxy :: Proxy EventId) $ events (gameState ss)
+  t <- mapM renderEvent $ IxSet.toAscList (Proxy :: Proxy EventTick) $ events (gameState ss)
   pure $ TL.intercalate "\n" $ map TL.toLazyText t
 
 rPad ::  (F.Buildable.Buildable a) => Int -> a-> TL.Builder
@@ -52,7 +61,9 @@ renderEvent e@Event{..} = do
   let assignedIds = if (length $ eventObjectIdAssignmentIdx e) > 0
                       then " [AssignedIds: " <> ( renderMany $ map (displayShowT . objectIdToInt .  objectIdFromEventObjectIdAssignmentIdx) (eventObjectIdAssignmentIdx e)) <> "]"
                       else ""
-  pure $ simOrReal <> " " <> rPad 9 (eventIdToInt eventId) <> rPad 12 p <> d <> assignedIds
+      t = renderTick eventTick
+
+  pure $ simOrReal <> " " <> rPad 6 (eventIdToInt eventId) <> rPad 14 t <>  rPad 12 p <> d <> assignedIds
   where
 
     detail :: Sim  TL.Builder

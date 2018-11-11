@@ -95,6 +95,20 @@ eventLinkedBuilding e =
     EventTypeBuild b -> eventBuildBuilding b
     _ -> Nothing
 
+getSingleEventPos :: Event -> Maybe Pos
+getSingleEventPos e =
+  case eventType e of
+    EventTypeBuild b -> Just $ eventBuildPos b
+    EventTypePrimary b -> Just $ eventPrimaryPos b
+    EventTypeMove b -> Just $ eventMovePos b
+    EventTypeAttack b -> Just $ eventAttackPos b
+    EventTypeGather b -> Just $ eventGatherPos b
+    EventTypeVillOnRepairable b -> Just $ eventVillOnRepairablePos b
+    EventTypeGatherRelic b -> Just $ eventGatherRelicPos b
+    EventTypeRally b -> Just $ eventRallyPos b
+    EventTypeAttackGround b -> Just $ eventAttackGroundPos b
+    _ -> Nothing
+
 getEventBuildPos :: Event -> Pos
 getEventBuildPos e =
   case eventType e of
@@ -108,12 +122,13 @@ setEventLinkedBuilding e bid =
     EventTypeWall _ -> e -- we don't do this yet
     _ -> error  $ "Could not setEventLinkedBuilding on this kind of event " ++ show e
 
-eventBuildBuildingObjectType :: Event -> ObjectType
+eventBuildBuildingObjectType :: Event -> Maybe ObjectType
 eventBuildBuildingObjectType Event{..} =
   case eventType of
-    EventTypeBuild e -> eventBuildingType e
-    EventTypeWall e -> eventWallBuildingType e
-    _ -> error " Only use this for events previously validated as build or wall events"
+    EventTypeBuild e -> Just $ eventBuildingType e
+    EventTypeWall e -> Just $ eventWallBuildingType e
+    _ -> Nothing
+
 data MilitaryDisposition =
     MilitaryDispositionStance Int
   | MilitaryDispositionFormation Int
@@ -172,6 +187,8 @@ setEventLinkedUnit e bid =
   case eventType e of
     EventTypeTrain b -> e{eventType = EventTypeTrain b{eventTrainUnit = Just bid}}
     _ -> error  $ "Could not setEventLinkedUnit on this kind of event " ++ show e
+
+
 
 eventTrainUnitObjectType :: Event -> ObjectType
 eventTrainUnitObjectType Event{..} =

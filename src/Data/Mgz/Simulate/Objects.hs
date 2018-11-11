@@ -38,6 +38,8 @@ module Data.Mgz.Simulate.Objects(
   objectInfo,
   objectPlacedByGame,
   objectPosHistory,
+  objectDeletedBy,
+  setObjectDeletedBy,
   addObjectPos,
   setObjectPlayer,
   objectTypeW,
@@ -101,7 +103,8 @@ data Object = Object {
   _objectPlayer :: Maybe PlayerId,
   _objectInfo :: ObjectInfo,
   _objectPlacedByGame :: Bool,
-  _objectPosHistory :: [Pos]
+  _objectPosHistory :: [Pos],
+  _objectDeletedBy :: Maybe EventId
 } deriving (Show, Eq, Ord)
 
 
@@ -113,8 +116,16 @@ objectPlayer = _objectPlayer
 objectPosHistory :: Object -> [Pos]
 objectPosHistory = _objectPosHistory
 
+
+objectDeletedBy :: Object -> Maybe EventId
+objectDeletedBy = _objectDeletedBy
+
 addObjectPos :: Object -> Pos -> Object
-addObjectPos o p = o{_objectPosHistory = objectPosHistory o ++ [p]}
+addObjectPos o p = o{_objectPosHistory = L.nub $ objectPosHistory o ++ [p]}
+
+setObjectDeletedBy :: Object -> EventId -> Object
+setObjectDeletedBy o e =  o{_objectDeletedBy = Just e}
+
 
 setObjectPlayer :: Object -> Maybe PlayerId -> Object
 setObjectPlayer o m =
@@ -138,6 +149,7 @@ newObject i p = Object {
   , _objectInfo = ObjectInfoUnknown OTRestrictNone
   , _objectPlacedByGame = False
   , _objectPosHistory = []
+  , _objectDeletedBy = Nothing
   }
 
 objectFromObjectRaw :: ObjectRaw -> (Object, MapObject)
@@ -216,36 +228,40 @@ newBuilding = Building {
 
 
 getBuildingPlaceEvent :: Object -> Maybe (EventId)
-getBuildingPlaceEvent = buildingPlaceEvent . extractBuilding
+getBuildingPlaceEvent o = join $ fmap buildingPlaceEvent (extractBuilding o)
 
 setBuildingPlaceEvent :: Object -> Maybe (EventId) -> Object
 setBuildingPlaceEvent o e =
-  let b = extractBuilding o
-      newB = b{buildingPlaceEvent = e}
-  in o{_objectInfo = ObjectInfoBuilding newB}
+  case extractBuilding o of
+    Just b ->
+      let newB = b{buildingPlaceEvent = e}
+      in o{_objectInfo = ObjectInfoBuilding newB}
+    Nothing -> error $ "Attempt to set building place event on non building " ++ show o
 
 
-extractBuilding :: Object -> Building
+extractBuilding :: Object -> Maybe Building
 extractBuilding Object{..} =
   case _objectInfo of
-    ObjectInfoBuilding b -> b
-    _ -> error "Could not extract building"
+    ObjectInfoBuilding b -> Just b
+    _ -> Nothing
 
 getUnitTrainEvent :: Object -> Maybe (EventId)
-getUnitTrainEvent = unitTrainEvent . extractUnit
+getUnitTrainEvent o = join $ fmap unitTrainEvent (extractUnit o)
 
 setUnitTrainEvent :: Object -> Maybe (EventId) -> Object
 setUnitTrainEvent o e =
-  let b = extractUnit o
-      newB = b{unitTrainEvent = e}
-  in o{_objectInfo = ObjectInfoUnit newB}
+  case extractUnit o of
+    Just b ->
+      let newB = b{unitTrainEvent = e}
+      in o{_objectInfo = ObjectInfoUnit newB}
+    Nothing -> error $ "Attempt to set unit train event on non unit " ++ show o
 
 
-extractUnit :: Object -> Unit
+extractUnit :: Object -> Maybe Unit
 extractUnit Object{..} =
   case _objectInfo of
-    ObjectInfoUnit b -> b
-    _ -> error "Could not extract unit"
+    ObjectInfoUnit b -> pure b
+    _ -> Nothing
 
 data MapObject = MapObject {
   mapObjectType :: OTRestrict,
@@ -364,7 +380,7 @@ applyRestriction (OTRestrictOneOf ots) r =
   case L.nub $ NE.filter ((flip anyMeetsRestriction) r . OTRestrictKnown) ots of
     [] -> error $ "No possible object types found when applying restriction " ++ show r ++ " to list of objects " ++ show ots
     [a] -> OTRestrictKnown a
-    as -> OTRestrictOneOf $ nonEmptyPartial as
+    as -> OTRestrictOneOf $ nonEmptyPartial . L.nub . L.sort $ as
 applyRestriction orig@(OTRestrictGeneral rs) r =
   if r `elemNonEmpty` rs -- we already have this restriction
     then orig
@@ -378,8 +394,8 @@ otRestrictFromRestictions restrictions =
      [a] -> OTRestrictKnown a
      as ->
        if length as < 10
-        then OTRestrictOneOf $ nonEmptyPartial as
-        else OTRestrictGeneral restrictions
+        then OTRestrictOneOf $ nonEmptyPartial . L.nub . L.sort $ as
+        else OTRestrictGeneral $ nonEmptyPartial . L.nub . L.sort . NE.toList $ restrictions
 
 anyMeetsRestriction :: (HasObjectRestrict a) => a -> OTRestriction -> Bool
 anyMeetsRestriction a r =
@@ -388,14 +404,6 @@ anyMeetsRestriction a r =
     OTRestrictOneOf ts -> or . NE.toList $ NE.map (\t -> hmMatches t r objectTypeToRestrictionMap) ts
     OTRestrictGeneral rs -> elemNonEmpty r rs
     OTRestrictNone -> False
-{-
-exactlyMeetsRestriction :: (HasObjectRestrict a) => a -> OTRestriction -> Bool
-exactlyMeetsRestriction a r =
-  case getObjectRestrict a of
-    OTRestrictKnown t -> HM.lookup t objectTypeToRestrictionMap == Just [r]
-    OTRestrictOneOf ts -> and . NE.toList $ NE.map (\t -> exactlyMeetsRestriction (OTRestrictKnown t) r) ts
-    OTRestrictGeneral rs -> NE.head rs == r
-    OTRestrictNone -> False-}
 
 getObjectType :: (HasObjectRestrict a) => a -> Maybe ObjectType
 getObjectType o =
@@ -493,52 +501,4 @@ isNotDropoffBuilding a = anyMeetsRestriction a OTRestrictionIsNotDropoffBuilding
 isResource :: HasObjectRestrict a => a -> Bool
 isResource a = anyMeetsRestriction a OTRestrictionIsResource
 
-{-isObjectResource :: Object -> Bool
-isObjectResource Object{..} =
-  case objectInfo of
-    ObjectInfoMapObject u -> isResource $ mapObjectType u
-    ObjectInfoUnit u ->
-      case toObjectType u of
-        Nothing -> False
-        Just n -> and $ map isResource $ NE.toList n
-    _ -> False
-
-isObjectPrimaryActableByPlayerMilitary :: Maybe PlayerId -> Object -> Bool
-isObjectPrimaryActableByPlayerMilitary mp Object{..} =
-  case objectInfo of
-    ObjectInfoMapObject u -> canMilitaryPrimaryAct $ mapObjectType u
-    ObjectInfoBuilding _ ->
-      case mp of
-        Nothing -> True
-        Just p ->
-          if (objectPlayer == Just p)
-            then False
-            else True
-    _ -> True -- monks can target own units
-
-
-restrictBuildingType :: BuildingType -> NonEmpty ObjectType -> BuildingType
-restrictBuildingType BuildingTypeUnknown new = BuildingTypeOneOf $ new
-restrictBuildingType (BuildingTypeOneOf old) new =
-  case filter (\t -> t `elemNonEmpty` new) $ NE.toList old of
-    [] -> error $ "Expected to find at least one matching building type in " ++ show old ++ " when restricting to " ++ show new
-    [x] -> BuildingTypeKnown x
-    xs -> BuildingTypeOneOf $ nonEmptyPartial xs
-restrictBuildingType (BuildingTypeKnown t) new =
-  case t `elemNonEmpty` new of
-    True -> BuildingTypeKnown t
-    False -> error $ "Expected known building to match " ++ show new ++ " but it was a " ++ show t
-
-
-isVillagerType :: ObjectType -> Bool
-isVillagerType OT_Villager = True
-isVillagerType _ = False
-
-isNotVillagerOrMilitary :: ObjectType -> Bool
-isNotVillagerOrMilitary OT_Sheep = True
-isNotVillagerOrMilitary _ = False
-
-
-
--}
 

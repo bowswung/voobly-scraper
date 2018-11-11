@@ -69,7 +69,8 @@ library
     text,
     base16-bytestring,
     text-format,
-    binary-parsers
+    binary-parsers,
+    human-readable-duration
 
   hs-source-dirs:      src
   ghc-options:         -Wall
