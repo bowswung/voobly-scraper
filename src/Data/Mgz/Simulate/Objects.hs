@@ -52,7 +52,9 @@ module Data.Mgz.Simulate.Objects(
   isMonk,
   isObjectFriend,
   isBuilding,
-  isNotDropoffBuilding
+  isNotDropoffBuilding,
+  isKnownType,
+  isAttackingBuilding
   ) where
 
 import RIO
@@ -478,6 +480,9 @@ isObjectFriend (Just p) Object{..} =
 just some helpful specicalisations
 -}
 
+isKnownType :: HasObjectRestrict a => a -> Bool
+isKnownType a = isJust $ getObjectType a
+
 isVillager :: HasObjectRestrict a => a -> Bool
 isVillager a = getObjectType a == Just OT_Villager
 
@@ -488,13 +493,16 @@ isBuilding :: HasObjectRestrict a => a -> Bool
 isBuilding a = anyMeetsRestriction a OTRestrictionIsBuilding
 
 isMonk :: HasObjectRestrict a => a -> Bool
-isMonk a = anyMeetsRestriction a OTRestrictionIsMonk
+isMonk a = isKnownType a && anyMeetsRestriction a OTRestrictionIsMonk
 
 isUnit :: HasObjectRestrict a => a -> Bool
 isUnit a = anyMeetsRestriction a OTRestrictionIsUnit
 
 isMilitaryUnit :: HasObjectRestrict a => a -> Bool
 isMilitaryUnit a = anyMeetsRestriction a OTRestrictionIsMilitaryUnit
+
+isAttackingBuilding :: HasObjectRestrict a => a -> Bool
+isAttackingBuilding a = anyMeetsRestriction a OTRestrictionCanAttack && anyMeetsRestriction a OTRestrictionIsBuilding
 
 isNotDropoffBuilding :: HasObjectRestrict a => a -> Bool
 isNotDropoffBuilding a = anyMeetsRestriction a OTRestrictionIsNotDropoffBuilding

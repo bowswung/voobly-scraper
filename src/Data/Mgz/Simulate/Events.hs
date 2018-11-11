@@ -6,6 +6,7 @@ import RIO
 
 
 import Data.Mgz.Deserialise
+import Data.Mgz.Utils
 import Data.Mgz.Constants
 import Data.Mgz.Simulate.Objects
 import Data.List.NonEmpty(NonEmpty(..))
@@ -52,6 +53,14 @@ data EventAttack = EventAttack {
   eventAttackPos :: Pos
 } deriving (Show, Eq, Ord)
 
+getEventAttackTarget :: Event -> Maybe ObjectId
+getEventAttackTarget Event{..} =
+  case eventType of
+    EventTypeAttack e -> Just $ eventAttackTargetId e
+    _ -> Nothing
+
+
+
 data EventGather = EventGather {
   eventGatherGatherers :: [UnitId],
   eventGatherTargetId :: ObjectId,
@@ -69,6 +78,12 @@ data EventGatherRelic = EventGatherRelic {
   eventGatherRelicGatherers :: [UnitId],
   eventGatherRelicTargetId :: ObjectId,
   eventGatherRelicPos :: Pos
+} deriving (Show, Eq, Ord)
+
+data EventDropoffRelic = EventDropoffRelic {
+  eventDropoffRelicGatherers :: [UnitId],
+  eventDropoffRelicTargetId :: BuildingId,
+  eventDropoffRelicPos :: Pos
 } deriving (Show, Eq, Ord)
 
 data EventPrimary = EventPrimary {
@@ -108,7 +123,9 @@ getSingleEventPos e =
     EventTypeGatherRelic b -> Just $ eventGatherRelicPos b
     EventTypeRally b -> Just $ eventRallyPos b
     EventTypeAttackGround b -> Just $ eventAttackGroundPos b
+    EventTypePatrol b -> headMaybe . reverse $ eventPatrolWaypoints b
     _ -> Nothing
+
 
 getEventBuildPos :: Event -> Pos
 getEventBuildPos e =
@@ -316,11 +333,19 @@ data EventWall = EventWall {
     , eventWallBuilders :: [UnitId]
   }  deriving (Show, Eq, Ord)
 
+data EventDeath = EventDeath {
+      eventDeathObject :: ObjectId
+    , eventDeathFinalAction :: EventId
+    , eventDeathKilledByEvent :: EventId
+  }  deriving (Show, Eq, Ord)
+
+
 data EventType =
     EventTypeMove EventMove
   | EventTypeAttack EventAttack
   | EventTypeGather EventGather
   | EventTypeGatherRelic EventGatherRelic
+  | EventTypeDropoffRelic EventDropoffRelic
   | EventTypePrimary EventPrimary
   | EventTypeMilitaryDisposition EventMilitaryDisposition
   | EventTypeTargetedMilitaryOrder EventTargetedMilitaryOrder
@@ -346,6 +371,7 @@ data EventType =
   | EventTypeBackToWork EventBackToWork
   | EventTypeWall EventWall
   | EventTypeVillOnRepairable EventVillOnRepairable
+  | EventTypeDeath EventDeath
   deriving (Show, Eq, Ord)
 
 
@@ -357,6 +383,7 @@ instance ReferencesObjectIds EventType where
   referencesObjectIds (EventTypeAttack e) = referencesObjectIds e
   referencesObjectIds (EventTypeGather e) = referencesObjectIds e
   referencesObjectIds (EventTypeGatherRelic e) = referencesObjectIds e
+  referencesObjectIds (EventTypeDropoffRelic e) = referencesObjectIds e
   referencesObjectIds (EventTypePrimary e) = referencesObjectIds e
   referencesObjectIds (EventTypeMilitaryDisposition e) = referencesObjectIds e
   referencesObjectIds (EventTypeTargetedMilitaryOrder e) = referencesObjectIds e
@@ -382,6 +409,7 @@ instance ReferencesObjectIds EventType where
   referencesObjectIds (EventTypeBackToWork e) = referencesObjectIds e
   referencesObjectIds (EventTypeWall e) = referencesObjectIds e
   referencesObjectIds (EventTypeVillOnRepairable e) = referencesObjectIds e
+  referencesObjectIds (EventTypeDeath _) = []
 
 class ReferencesObjectIds a where
   referencesObjectIds :: a -> [ObjectId]
@@ -403,6 +431,11 @@ instance ReferencesObjectIds EventVillOnRepairable where
 
 instance ReferencesObjectIds EventGatherRelic where
    referencesObjectIds EventGatherRelic{..} = eventGatherRelicTargetId:(map toObjectId eventGatherRelicGatherers)
+
+
+instance ReferencesObjectIds EventDropoffRelic where
+   referencesObjectIds EventDropoffRelic{..} = (toObjectId eventDropoffRelicTargetId):(map toObjectId eventDropoffRelicGatherers)
+
 
 instance ReferencesObjectIds EventPrimary where
    referencesObjectIds EventPrimary{..} = eventPrimaryTarget:eventPrimaryObjects
@@ -446,6 +479,7 @@ data EventTypeW =
   | EventTypeWAttack
   | EventTypeWGather
   | EventTypeWGatherRelic
+  | EventTypeWDropoffRelic
   | EventTypeWPrimary
   | EventTypeWMilitaryDisposition
   | EventTypeWTargetedMilitaryOrder
@@ -472,6 +506,7 @@ data EventTypeW =
   | EventTypeWWall
   | EventTypeWDropoff
   | EventTypeWVillOnRepairable
+  | EventTypeWDeath
   deriving (Show, Eq, Ord)
 
 eventTypeW :: Event -> EventTypeW
@@ -481,6 +516,7 @@ eventTypeW e =
     EventTypeAttack                _ -> EventTypeWAttack
     EventTypeGather                _ -> EventTypeWGather
     EventTypeGatherRelic           _ -> EventTypeWGatherRelic
+    EventTypeDropoffRelic           _ -> EventTypeWDropoffRelic
     EventTypePrimary               _ -> EventTypeWPrimary
     EventTypeMilitaryDisposition   _ -> EventTypeWMilitaryDisposition
     EventTypeTargetedMilitaryOrder _ -> EventTypeWTargetedMilitaryOrder
@@ -506,6 +542,7 @@ eventTypeW e =
     EventTypeBackToWork            _ -> EventTypeWBackToWork
     EventTypeWall                  _ -> EventTypeWWall
     EventTypeVillOnRepairable        _ -> EventTypeWVillOnRepairable
+    EventTypeDeath        _ -> EventTypeWDeath
 
 class EventActingObjects a where
   eventActingObjects :: a -> [ObjectId]
@@ -518,6 +555,7 @@ instance EventActingObjects EventType where
   eventActingObjects (EventTypeAttack e) = eventActingObjects e
   eventActingObjects (EventTypeGather e) = eventActingObjects e
   eventActingObjects (EventTypeGatherRelic e) = eventActingObjects e
+  eventActingObjects (EventTypeDropoffRelic e) = eventActingObjects e
   eventActingObjects (EventTypePrimary e) = eventActingObjects e
   eventActingObjects (EventTypeMilitaryDisposition e) = eventActingObjects e
   eventActingObjects (EventTypeTargetedMilitaryOrder e) = eventActingObjects e
@@ -543,6 +581,7 @@ instance EventActingObjects EventType where
   eventActingObjects (EventTypeBackToWork e) = eventActingObjects e
   eventActingObjects (EventTypeWall e) = eventActingObjects e
   eventActingObjects (EventTypeVillOnRepairable e) = eventActingObjects e
+  eventActingObjects (EventTypeDeath _) = []
 
 instance EventActingObjects EventMove where
   eventActingObjects EventMove{..} =  map toObjectId eventMoveUnits
@@ -558,6 +597,9 @@ instance EventActingObjects EventVillOnRepairable where
 
 instance EventActingObjects EventGatherRelic where
   eventActingObjects EventGatherRelic{..} =  map toObjectId eventGatherRelicGatherers
+
+instance EventActingObjects EventDropoffRelic where
+  eventActingObjects EventDropoffRelic{..} =  map toObjectId eventDropoffRelicGatherers
 
 instance EventActingObjects EventPrimary where
   eventActingObjects EventPrimary{..} =  map toObjectId eventPrimaryObjects

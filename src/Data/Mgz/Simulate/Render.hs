@@ -86,6 +86,11 @@ renderEvent e@Event{..} = do
           t <- renderObject eventGatherRelicTargetId
           u <- renderObjects eventGatherRelicGatherers
           pure $ "Gathered relic " <> t <> " with " <> u <> " at " <> renderPos eventGatherRelicPos
+        (EventTypeDropoffRelic (EventDropoffRelic{..})) -> do
+          t <- renderObject eventDropoffRelicTargetId
+          u <- renderObjects eventDropoffRelicGatherers
+          pure $ "Dropped off relic at " <> t <> " with " <> u <> " at " <> renderPos eventDropoffRelicPos
+
 
         (EventTypeAttack (EventAttack{..})) -> do
           t <- renderObject eventAttackTargetId
@@ -181,6 +186,16 @@ renderEvent e@Event{..} = do
         (EventTypeWall (EventWall{..})) -> do
           o <- renderUnits eventWallBuilders
           pure $ "Walled with " <> renderRawObjectType eventWallBuildingType <> " from " <> renderPosSimple eventWallStartPos <> " to " <> renderPosSimple eventWallEndPos <> " with " <> o
+        (EventTypeDeath (EventDeath{..})) -> do
+          o <- renderObject eventDeathObject
+          lastA <- lookupEventOrFail  eventDeathFinalAction
+          killedBy <- lookupEventOrFail  eventDeathKilledByEvent
+          lastAR <- renderEvent lastA
+          killedByR <- renderEvent killedBy
+          pure $ "*** DEATH *** " <> o <>
+            "\n          Last action: " <> lastAR <>
+            "\n          Killed by: " <> killedByR
+
 
         --_ -> pure $ displayShowB eventType
     simOrReal :: TL.Builder

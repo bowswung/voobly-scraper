@@ -88,6 +88,8 @@ newtype EventSinglePosIdx = EventSinglePosIdx Pos deriving (Eq, Ord, Show)
 eventSinglePosIdx :: Event -> Maybe EventSinglePosIdx
 eventSinglePosIdx = fmap EventSinglePosIdx . getSingleEventPos
 
+
+
 newtype EventResearchBuildingIdx = EventResearchBuildingIdx BuildingId deriving (Eq, Ord, Show)
 eventResearchBuildingIdx :: Event -> Maybe EventResearchBuildingIdx
 eventResearchBuildingIdx = fmap EventResearchBuildingIdx . eventResearchBuildingMaybe
@@ -219,6 +221,9 @@ getBuildingForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
   fmap asBuilding $ updateWithRestriction o OTRestrictionIsBuilding
 
+reloadObjects :: (ToObjectId a ) => [a] -> Sim [Object]
+reloadObjects = mapM lookupObjectOrFail
+
 lookupObject :: (ToObjectId a ) => a -> Sim (Maybe Object)
 lookupObject i = do
   when (toObjectId i < ObjectId 0) $ error "GOT AN OBJECT ID < 0"
@@ -231,6 +236,15 @@ lookupObjectOrFail i = do
   case mo of
     Just o -> pure o
     Nothing -> error $ "Could not find object with id " ++ (show $ toObjectId i)
+
+
+lookupEventOrFail :: EventId -> Sim Event
+lookupEventOrFail i = do
+  s <- getEventSet
+  case IxSet.getOne $ IxSet.getEQ i s of
+    Just o -> pure o
+    Nothing -> error $ "Could not find event with id " ++ (show $ i)
+
 
 
 updateObject :: Object -> Sim Object
@@ -256,6 +270,23 @@ addRealEvent c mP et = do
     let gs = gameState ss
     in ss{gameState = gs{events = IxSet.insert e (events gs)}}
   pure e
+
+addSimulatedEvent :: Int -> EventType -> Sim Event
+addSimulatedEvent t et = do
+  ssP <- get
+  let e = Event {
+            eventId = EventId $ IxSet.size (events $ gameState ssP) + 1
+          , eventTick = t
+          , eventKind = EventKindSimulated
+          , eventPlayerResponsible = Just . PlayerId $ 0
+          , eventType = et
+          , eventAssignObjectIds = []
+          }
+  modify' $ \ss ->
+    let gs = gameState ss
+    in ss{gameState = gs{events = IxSet.insert e (events gs)}}
+  pure e
+
 
 
 updateEvent :: Event -> Sim Event

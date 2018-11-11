@@ -23,7 +23,7 @@ import Data.Mgz.Constants
 parseRec :: HasLogFunc env => RIO env (Either String RecInfo)
 parseRec = do
   logInfo "Starting parse"
-  bl <- BL.readFile "/code/recanalyst/test/recs/versions/up1.4.mgz"
+  bl <- BL.readFile "/code/voobly-scraper/test/recs/up1.4.mgz"
   pure $ runGetEither getRecInfo bl
 
 

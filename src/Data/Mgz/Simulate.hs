@@ -7,6 +7,7 @@ import RIO
 import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
+import qualified RIO.List.Partial as L.Partial
 --import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
@@ -69,10 +70,13 @@ simulate RecInfo{..} = do
       assignObjectIdsToEvents
 
       logInfo "Linking train commands with units"
-      void $ replicateM 5 (linkUnitsToTrainCommands False)
+      void $ replicateM 3 (linkUnitsToTrainCommands False)
 
-      logInfo "Guessing at remaining unit types"
-      linkUnitsToTrainCommands True
+      logInfo "Inferring death and destruction"
+      inferDeathAndDestruction
+
+{-      logInfo "Guessing at remaining unit types"
+      linkUnitsToTrainCommands True-}
 
       objectsNotPlaced <- fmap (IxSet.getEQ (ObjectPlacedByGameIdx False)) getObjectSet
       logInfo $ displayShow (IxSet.size objectsNotPlaced) <>  " objects were found"
@@ -144,12 +148,102 @@ assignObjectIdsToEvents = do
   where
     assignObjectIdToEvent :: Object -> Sim ()
     assignObjectIdToEvent o = do
-      mustBeAfterOrAt <- fmap  (headMaybe . IxSet.toDescList (Proxy :: Proxy EventId)  . IxSet.getLT (EventObjectIdAssignmentIdx $ objectId o)) getEventSet
+      alreadyAssigned <- fmap  (IxSet.toList . IxSet.getEQ (EventObjectIdAssignmentIdx $ objectId o)) getEventSet
+      void $ mapM (\e -> updateEvent $ e{eventAssignObjectIds = filter ((/=) (objectId o)) $ eventAssignObjectIds e}) alreadyAssigned
+      mustBeAfterOrAt <- fmap  (headMaybe . IxSet.toDescList (Proxy :: Proxy EventId)  . IxSet.getLTE (EventObjectIdAssignmentIdx $ objectId o)) getEventSet
       case mustBeAfterOrAt of
         Just e -> void $ updateEvent $ e{eventAssignObjectIds = L.sort . L.nub $ eventAssignObjectIds e ++ [objectId o]}
         Nothing -> traceM $ "Found object id that was never referenced"
 
 
+inferDeathAndDestruction :: Sim ()
+inferDeathAndDestruction = do
+  knownUnits <- fmap (IxSet.toAscList (Proxy :: Proxy ObjectId) .  IxSet.getEQ ObjectTypeWUnit) $ getObjectSet
+  gameLength <- fmap (eventTick . L.Partial.head . IxSet.toDescList (Proxy :: Proxy EventTick)) getEventSet
+  void $ mapM (simulateDeath gameLength) knownUnits
+
+  where
+    simulateDeath :: Int -> Object -> Sim ()
+    simulateDeath lastTick o = do
+      mLastEventAction <- fmap (headMaybe . IxSet.toDescList (Proxy :: Proxy EventTick) .  IxSet.getEQ (objectId o)) $ getEventSet
+      mLastEventInvolvedIn <- fmap (headMaybe . IxSet.toDescList (Proxy :: Proxy EventTick) .  IxSet.getEQ (ReferencesObjectIdx $ objectId o)) $ getEventSet
+
+      case (mLastEventAction, mLastEventInvolvedIn) of
+        (Just lastAction, Just lastInvolved)  -> do
+          if eventTick lastAction > (lastTick - 120 * 1000) || eventTick lastInvolved > (lastTick - 120 * 1000)
+            then pure ()
+            else do
+              mDeath <- if isMilitaryUnit o
+                          then inferMilitaryDeathFromLastEvents o lastAction lastInvolved
+                          else inferVillagerDeathFromLastEvents o lastAction lastInvolved
+              case mDeath of
+                Nothing -> pure ()
+                Just (t, ee) -> void $ addSimulatedEvent t (EventTypeDeath EventDeath{
+                  eventDeathObject = objectId o,
+                  eventDeathFinalAction = eventId lastAction,
+                  eventDeathKilledByEvent = eventId ee
+                  })
+        _ -> pure ()
+
+type DEATH = (Int, Event)
+
+inferMilitaryDeathFromLastEvents :: Object -> Event -> Event -> Sim (Maybe DEATH)
+inferMilitaryDeathFromLastEvents o lastAction lastInvolved = do
+
+
+  es <- getRelevantEnemyActivityInLastKnownPosBetween 60 60 o lastInvolved
+  case es of
+    [] -> do
+      if eventTypeW lastAction == EventTypeWAttack || eventTypeW lastInvolved == EventTypeWAttack
+        then do pure . pure $ (timeOfDeath lastAction lastInvolved, lastInvolved)
+        else do pure Nothing
+    [de] -> pure . pure $ (timeOfDeath lastAction de, de)
+    des -> do
+      let de = L.Partial.head $ L.sortBy (compare `on` (\x -> abs (eventTick x - eventTick lastInvolved))) des
+      pure . pure $ (timeOfDeath lastAction de, de)
+
+getRelevantEnemyActivityInLastKnownPosBetween :: Int -> Int -> Object -> Event -> Sim [Event]
+getRelevantEnemyActivityInLastKnownPosBetween pre post o e =
+  case (objectPlayer o, getSingleEventPos e) of
+    (Just thisPlayer, Just p) -> do
+      let enemyPlayer = if thisPlayer == PlayerId 1 then PlayerId 2 else PlayerId 1 -- @team
+      eSet <- getEventSet
+      let events =  IxSet.toList .
+                        IxSet.getGT (EventTick $ (eventTick e) - pre * 1000) .
+                        IxSet.getLT (EventTick $ (eventTick e) + post * 1000) .
+                        ixsetGetIn [EventTypeWAttack, EventTypeWMove, EventTypeWPatrol] $
+                        IxSet.getEQ (Just enemyPlayer) $
+                        eSet
+      case filter (\ef -> getEventAttackTarget ef == (Just $ objectId o)) events of
+        [] -> pure $ filter (eventOverlapsWith p) events
+        xs -> pure xs
+    _ -> pure []
+
+eventOverlapsWith :: Pos -> Event -> Bool
+eventOverlapsWith tp e =
+  case getSingleEventPos e of
+    Nothing -> False
+    Just ep -> and [
+        posX tp < (posX ep + overlap)
+      , posX tp > (posX ep - overlap)
+      , posY tp < (posY ep + overlap)
+      , posY tp > (posY ep - overlap)]
+  where
+    overlap = 6
+
+inferVillagerDeathFromLastEvents :: Object -> Event -> Event -> Sim (Maybe DEATH)
+inferVillagerDeathFromLastEvents o lastAction lastInvolved = do
+  mD <- inferMilitaryDeathFromLastEvents o lastAction lastInvolved
+  case mD of
+    Just d -> pure . pure $ d
+    Nothing -> do
+      es <- getRelevantEnemyActivityInLastKnownPosBetween 0 (30 * 60) o lastInvolved
+      case es of
+        [] -> pure Nothing
+        e:_ ->  pure . pure $ (timeOfDeath lastAction e, e)
+
+timeOfDeath :: Event -> Event -> Int
+timeOfDeath a b = 400 + max (eventTick a) (eventTick b)
 
 makeSimpleInferences :: Sim ()
 makeSimpleInferences = do
@@ -277,7 +371,7 @@ makeSimpleInferences = do
           , eventGatherPos = p
           }
         else
-          if and (map ((==) ObjectTypeWUnit . objectTypeW) actors) && isResource t &&  (not $ isObjectEnemy pId t) && (anyMeetsRestriction t OTRestrictionIsNotActableByMilitary)
+          if and (map ((/=) ObjectTypeWBuilding . objectTypeW) actors) && isResource t &&  (not $ isObjectEnemy pId t) && (anyMeetsRestriction t OTRestrictionIsNotActableByMilitary)
             then do
               actors' <- mapM (\o -> updateObject $  restrictObjectType o OTRestrictionIsLandResourceGatherer) actors
               pure . Just $ EventTypeGather EventGather{
@@ -289,8 +383,12 @@ makeSimpleInferences = do
 
     construeAsVillOnRepairable :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
     construeAsVillOnRepairable pId origT actors p =
-      if and (map isVillager actors) && (isObjectFriend pId origT) && (not $ isResource origT)
+      -- if any are vills then this is a repairing or building event?
+      if or (map isVillager actors) && (isObjectFriend pId origT) && (not $ isResource origT)
         then do
+          -- we remove reference to any military units involved because they can't primary act on friendly objects
+          let nonMilitaryActors = filter (\a -> not $ isMilitaryUnit a ) actors
+          actors' <- mapM (\o -> updateObject $  restrictObjectType o OTRestrictionIsBuilder) nonMilitaryActors
           -- vills can only primary act on owned objects if they are reppairables
           t <- if isBuilding origT then pure origT else updateWithRestriction origT OTRestrictionIsRepairable
           let ts =
@@ -303,7 +401,7 @@ makeSimpleInferences = do
           pure . Just $ EventTypeVillOnRepairable EventVillOnRepairable{
             eventVillOnRepairableType = nonEmptyPartial ts
           , eventVillOnRepairableObject = objectId t
-          , eventVillOnRepairableVills = map (unitId . asUnit) actors
+          , eventVillOnRepairableVills = map (unitId . asUnit) actors'
           , eventVillOnRepairablePos = p
           }
         else pure Nothing
@@ -326,7 +424,7 @@ makeSimpleInferences = do
           case pId of
             Just thisPlayer ->
               --if military units primary something unknown then it must belong to the enemy
-              if or (map (\a -> isMilitaryUnit a && (not $ isMonk a)) actors) && objectPlayer t == Nothing
+              if or (map (\a -> (isMilitaryUnit a || isAttackingBuilding a) && (not $ isMonk a)) actors) && objectPlayer t == Nothing
                 then do
                   let otherPlayer = if thisPlayer == PlayerId 1 then PlayerId 2 else PlayerId 1 -- @team
                   void $ updateObjectWithPlayerIfNone t otherPlayer
@@ -335,7 +433,7 @@ makeSimpleInferences = do
             _ -> pure Nothing
 
     construeAsRelicGather :: Maybe PlayerId -> Object -> [Object] -> Pos -> Sim (Maybe EventType)
-    construeAsRelicGather _pId t actors p =
+    construeAsRelicGather pId t actors p =
       if getObjectType t == Just OT_Relic -- the only people who can primary relics are monks
         then do
          actors' <- mapM ((flip updateWithObjectType) OT_Monk) actors
@@ -344,8 +442,20 @@ makeSimpleInferences = do
               , eventGatherRelicTargetId = objectId t
               , eventGatherRelicPos = p
               }
-        else pure Nothing
-
+        else
+          if getObjectType t == Just OT_Monastery  && isObjectFriend pId t
+            then do
+              void $ (flip mapM) (filter (not . isKnownType) actors) $ \b -> updateWithObjectTypes b (nonEmptyPartial [OT_Monk, OT_Villager])
+              actors' <- reloadObjects actors
+              if and $ map isMonk actors'
+                then
+                  pure . Just $ EventTypeDropoffRelic EventDropoffRelic{
+                      eventDropoffRelicGatherers =  map (unitId . asUnit) actors'
+                    , eventDropoffRelicTargetId = buildingId . asBuilding $  t
+                    , eventDropoffRelicPos = p
+                    }
+                else pure Nothing
+            else pure Nothing
 
 
 linkBuildingsBasedOnPosition :: Sim ()
