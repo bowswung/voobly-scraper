@@ -19,6 +19,7 @@ module Data.Mgz.Simulate.Objects(
   setObjectType,
   getObjectType,
   getObjectTypes,
+  getPossibleObjectTypes,
   getBuildingPlaceEvent,
   setBuildingPlaceEvent,
   setUnitTrainEvent,
@@ -421,7 +422,14 @@ getObjectTypes o =
     OTRestrictOneOf ot -> Just ot
     _ -> Nothing
 
-
+getPossibleObjectTypes :: (HasObjectRestrict a) => a -> Maybe (NonEmpty ObjectType)
+getPossibleObjectTypes o =
+  case getObjectTypes o of
+    Nothing ->
+      case getObjectRestrict o of
+       OTRestrictGeneral rs -> Just . nonEmptyPartial . L.nub $ objectTypesForRestrictions rs
+       _ -> Nothing
+    Just ots -> Just ots
 
 otRestrictToRestrictions :: (HasObjectRestrict a) => a -> [OTRestriction]
 otRestrictToRestrictions a =

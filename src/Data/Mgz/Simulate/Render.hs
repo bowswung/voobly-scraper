@@ -249,7 +249,7 @@ renderUnits = renderObjects
 renderObjects :: (ToObjectId a) => [a] -> Sim TL.Builder
 renderObjects [] = pure "NO OBJECTS"
 renderObjects is = do
-  us <- mapM (\i -> renderObjectWithOptions i False False) is
+  us <- mapM (\i -> renderObjectWithOptions i False True) is
   let ts = map TL.toLazyText us
       types = L.sort . L.nub $ ts
       rs = map (\t -> (displayShowTL $ length (filter ((==) t) ts)) <> " " <> t <> "s") types

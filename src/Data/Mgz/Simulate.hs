@@ -8,7 +8,7 @@ import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import qualified RIO.List as L
 import qualified RIO.List.Partial as L.Partial
---import qualified Data.List.NonEmpty as NE
+import qualified Data.List.NonEmpty as NE
 import qualified Data.IxSet.Typed as IxSet
 import Control.Monad.State.Strict
 import qualified Data.Text.Lazy.Builder as TL
@@ -26,7 +26,36 @@ import Data.Mgz.Simulate.Render
 import Data.Mgz.Simulate.Command
 import Data.Mgz.Utils
 
+{-
 
+
+TODO
+  - UP 1.5
+  - player civs - restrictions have to run with reference to a civ and a version (for balance changes)
+  - team games (player teams)
+  - refactor all the awful object type lists into (indexed?) vectors if used directly (like in the main setObjectRestrict function)
+  - allow object player ids to change based on conversions etc (and add a separate event for when a monk primaries another unit (heal/convert))
+  - come up with a flexible model for time and place (ranges for both basically)
+  - integrate train times
+  - infer res from building, train and tech events
+
+NOTES:
+vills can only primary a building if it is damaged or they have res
+Vill gather commands overviden primary military when grouped together
+
+res counts - we can 100% infer exact limits on res counts when a tech is clicked twice - the first time there was definitely less than x res. and if a tech is clicked then stopped we know for sure that enough res was there for it to be clicked
+similarly, if we can detect dangling train events (that haven't been cancelled (stopped), but clearly didn't happen (like if a tech is researched after)) this gives us another way to know for sure that res was under a certain amount
+
+villagers can be assigned to resources based on primary actions, last buildings (eg lumbercamp), rally points and ungarrison events
+
+resource depletion and building destruction can be inferred from move commands at that location?
+
+death events should take into account moving near enemy attacking buildings
+
+villager deaths - if a vill is attacked they stop working, so if they don't get another command they are either dead or they are idle for the rest of the game so they may as well be
+
+
+-}
 
 replay :: GameState -> RIO LogFunc ()
 replay gs = do
@@ -190,7 +219,7 @@ type DEATH = (Int, Event)
 inferMilitaryDeathFromLastEvents :: Object -> Event -> Event -> Sim (Maybe DEATH)
 inferMilitaryDeathFromLastEvents o lastAction lastInvolved = do
 
-
+-- military deaths should be much more reliable than vills, who keep working without any input - we shoud basically assign death to anything that is passed here one way or another
   es <- getRelevantEnemyActivityInLastKnownPosBetween 60 60 o lastInvolved
   case es of
     [] -> do
@@ -300,6 +329,13 @@ makeSimpleInferences = do
           o <- lookupObjectOrFail eventGarrisonTargetId
           o' <- updateWithRestriction o OTRestrictionIsGarrisonable
           void $ updateObjectWithMaybePlayerIfNone o' eventPlayerResponsible
+          ts <- lookupObjects eventGarrisonGarrisonedUnits
+          case fmap NE.toList $ getPossibleObjectTypes o of
+            Just xs | OT_TransportShip `elem` xs -> pure ()
+                    | OT_Castle `elem` xs -> void $ mapM ((flip updateWithRestriction) OTRestrictionCanGarrisonCastle) ts
+                    | otherwise -> void $ mapM ((flip updateWithRestriction) OTRestrictionCanGarrisonTCEtc) ts
+            Nothing -> pure ()
+
         EventTypeUngarrison EventUngarrison{..} -> do
           os <- mapM lookupObjectOrFail eventUngarrisonReleasedFrom
           void $ (flip mapM) os $ \o -> do
@@ -315,7 +351,9 @@ makeSimpleInferences = do
         then void $ updateWithObjectType o OT_Villager
         else do
           militaryEvents <- fmap (ixsetGetIn [EventTypeWPatrol, EventTypeWMilitaryDisposition, EventTypeWTargetedMilitaryOrder]  . IxSet.getEQ (objectId o)) $ getEventSet
-          if IxSet.size militaryEvents > 0
+          -- Stance and FORMATION Can be given to mixed groups of vills and Millitary but patrol cannot
+          let impliesMilitary = or $ (flip map) (IxSet.toList militaryEvents) $ \e -> eventTypeW e == EventTypeWPatrol || length (eventActingObjects e) < 2
+          if impliesMilitary
             then void $ updateWithRestriction o OTRestrictionIsMilitaryUnit
             else pure ()
 
@@ -446,7 +484,7 @@ makeSimpleInferences = do
           if getObjectType t == Just OT_Monastery  && isObjectFriend pId t
             then do
               void $ (flip mapM) (filter (not . isKnownType) actors) $ \b -> updateWithObjectTypes b (nonEmptyPartial [OT_Monk, OT_Villager])
-              actors' <- reloadObjects actors
+              actors' <- lookupObjects actors
               if and $ map isMonk actors'
                 then
                   pure . Just $ EventTypeDropoffRelic EventDropoffRelic{
@@ -598,7 +636,8 @@ linkUnitsToTrainCommands forceConsumeEvents = do
       possibleEvents <- findUnconsumedTrainEventsForObject o
       foundE <- case possibleEvents of
          [] -> do
-            traceM $ "\n\nImpossible - this unit was never trained?"
+            -- because we are eagerly linking units to matching train events if we get this then it means there was a mistake - ideally we should unwind and try again with a different train event, but that will be expensive. Much better would be a way of generalising this logic somehow that allows more efficient querying. Train times should help a lot here, as they will give lower bounds for oid assignment for all units, which should allow more precise inferences in the first place
+            traceM $ "\n\nInconsistency - no matching train event for unit"
             traceShowM $ o
             allTrainEventsPrior <- fmap (IxSet.toList . IxSet.getEQ EventTypeWTrain) $  findEventsRangeForObjectCreation o Nothing
             void $ mapM debugBuildEvent $ allTrainEventsPrior
@@ -630,8 +669,9 @@ linkUnitsToTrainCommands forceConsumeEvents = do
                       _ -> updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
                case (possiblePlayers, possibleTypes) of
                  ([_], [_]) -> do
-                  -- we only have one type of train event and one player so we can just assign this to the first train event we  have (e). we can't eliminate all dangling train events but we can do fairly well with this approach it seems
+                  -- we only have one type of train event and one player so we can try assigning this to the earliest matching train event. This doesn't always work though, as it may leave some later units in a state where they have no possible train events, because this unit consumed it by mistake . We should allow fo this above
                   linkUnitToEvent o'' e
+                  pure ()
                  _ -> pure ()
             _ -> pure ()
         Just e ->

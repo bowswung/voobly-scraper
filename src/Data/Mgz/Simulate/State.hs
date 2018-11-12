@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell    #-}
-
+{-# OPTIONS -fno-warn-deprecations #-}
 module Data.Mgz.Simulate.State where
 
 
@@ -221,8 +221,8 @@ getBuildingForPlayer i pId = do
   o <- getObjectForPlayer i (Just pId)
   fmap asBuilding $ updateWithRestriction o OTRestrictionIsBuilding
 
-reloadObjects :: (ToObjectId a ) => [a] -> Sim [Object]
-reloadObjects = mapM lookupObjectOrFail
+lookupObjects :: (ToObjectId a ) => [a] -> Sim [Object]
+lookupObjects = mapM lookupObjectOrFail
 
 lookupObject :: (ToObjectId a ) => a -> Sim (Maybe Object)
 lookupObject i = do
@@ -352,7 +352,7 @@ findUnconsumedTrainEventsForObject o = do
   let maybeTrainEvents =
        IxSet.toList .
        restrictToLastXSeconds (4 * 60) .
-       maybe id (\ots -> ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) $ NE.toList ots)) (getObjectTypes o) .
+       maybe id (\ots -> ixsetGetIn (map (Just . EventTrainedObjectTypeIdx) $ NE.toList ots)) (getPossibleObjectTypes o) .
        maybe id (IxSet.getEQ . Just) (objectPlayer o) .
        IxSet.getEQ (Nothing :: Maybe EventTrainLinkedUnitIdx) .
        IxSet.getEQ EventTypeWTrain $

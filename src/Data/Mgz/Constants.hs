@@ -116,6 +116,8 @@ data OTRestriction =
   | OTRestrictionIsUngarrisonable
   | OTRestrictionIsGarrisonable
   | OTRestrictionIsUnit
+  | OTRestrictionCanGarrisonCastle
+  | OTRestrictionCanGarrisonTCEtc
   | OTRestrictionIsMilitaryUnit
   | OTRestrictionCanAttackGround
   | OTRestrictionIsGatherer
@@ -146,6 +148,8 @@ restrictionToKnownObjectTypeW OTRestrictionIsLandResource = pure ObjectTypeWMapO
 restrictionToKnownObjectTypeW OTRestrictionIsRelic = pure ObjectTypeWMapObject
 restrictionToKnownObjectTypeW OTRestrictionIsMapObject = pure ObjectTypeWMapObject
 restrictionToKnownObjectTypeW OTRestrictionCanAttackGround = pure ObjectTypeWUnit
+restrictionToKnownObjectTypeW OTRestrictionCanGarrisonTCEtc = pure ObjectTypeWUnit
+restrictionToKnownObjectTypeW OTRestrictionCanGarrisonCastle = pure ObjectTypeWUnit
 restrictionToKnownObjectTypeW OTRestrictionIsRepairable = Nothing
 restrictionToKnownObjectTypeW OTRestrictionIsGarrisonable = Nothing
 restrictionToKnownObjectTypeW OTRestrictionIsUngarrisonable = Nothing
@@ -175,6 +179,9 @@ restrictionToObjectTypes OTRestrictionIsNotActableByMilitary = notActableByMilit
 restrictionToObjectTypes OTRestrictionIsMapObject = allMapObjects
 restrictionToObjectTypes OTRestrictionCanAttackGround = attackGroundUnits
 restrictionToObjectTypes OTRestrictionIsNotDropoffBuilding = filter (\o -> not $ o `elem` dropoffBuildings) $ allBuildings
+restrictionToObjectTypes OTRestrictionCanGarrisonTCEtc = footUnits ++ [OT_Villager]
+restrictionToObjectTypes OTRestrictionCanGarrisonCastle = (restrictionToObjectTypes OTRestrictionCanGarrisonTCEtc ) ++ horseUnits
+
 
 
 repairableUnits :: [ObjectType]
@@ -227,6 +234,12 @@ nonMilitaryUnits = [OT_Villager, OT_FishingShip, OT_Sheep, OT_TradeCart, OT_Trad
 
 allMilitaryUnits :: [ObjectType]
 allMilitaryUnits = filter (\t -> not $ t `elem` nonMilitaryUnits) allUnits
+
+footUnits :: [ObjectType]
+footUnits = (concat $ catMaybes [HM.lookup OT_Barracks buildingToTrainUnitMap]) ++ [OT_Villager, OT_Archer, OT_Skirmisher]
+
+horseUnits :: [ObjectType]
+horseUnits = (concat $ catMaybes [HM.lookup OT_Stable buildingToTrainUnitMap]) ++ [OT_CavalryArcher, OT_WarWagon]
 
 attackGroundUnits :: [ObjectType]
 attackGroundUnits = [OT_Trebuchet, OT_TrebuchetPacked, OT_Mangonel]
