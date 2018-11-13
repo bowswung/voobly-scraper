@@ -14,6 +14,7 @@ import Control.Monad.State.Strict
 import qualified Data.Text.Lazy.Builder as TL
 import qualified Data.Text.Lazy.IO as TL
 import qualified Data.Text.Lazy as TL
+import qualified Data.List.Split as Split
 import qualified RIO.HashMap as HM
 import Data.Proxy(Proxy(..))
 import Data.Maybe (fromJust)
@@ -625,12 +626,57 @@ debugBuildEvent e = do
 linkUnitsToTrainCommands :: Bool -> Sim ()
 linkUnitsToTrainCommands forceConsumeEvents = do
   unitsMissingInfo <- fmap (IxSet.toList .
+                            IxSet.getEQ (OTRestrictionIsMilitaryUnit) .
                             IxSet.getEQ (ObjectTypeWUnit)) $
                             findUnlinkedObjects
   logInfo $ (displayShow $ length unitsMissingInfo) <> " unlinked units found"
   void $ mapM assignBasedOnTrainOrders $ unitsMissingInfo
+
+  makeSimpleInferences
+
+  unitsStillMissingInfo <- fmap (take 60) $ fmap (IxSet.toList .
+                            IxSet.getEQ (ObjectTypeWUnit)) $
+                            findUnlinkedObjects
+
+  withPossibleEventIds <- fmap HM.fromList $  (flip mapM) unitsStillMissingInfo $ \o -> do
+        es <- findUnconsumedTrainEventsForObject o
+        pure $ (objectId o, map eventId es)
+
+  void $ (flip mapM) (HM.toList . flipListHM $ withPossibleEventIds) $ \(_, oids) -> do
+    os <- lookupObjects oids
+    void $ mapM assignToTrainEvents $ Split.chunksOf 2 (L.sort os)
+    void $ mapM assignToTrainEvents $ Split.chunksOf 3 (L.sort os)
+    void $ mapM assignToTrainEvents $ Split.chunksOf 4 (L.sort os)
+    void $ mapM assignToTrainEvents $ Split.chunksOf 5 (L.sort os)
+    void $ mapM assignToTrainEvents $ Split.chunksOf 6 (L.sort os)
+
   makeSimpleInferences
   where
+
+    assignToTrainEvents :: [Object] -> Sim ()
+    assignToTrainEvents [] = pure ()
+    assignToTrainEvents (_:[]) = pure ()
+    assignToTrainEvents os = do
+      withPossibleEvents <- (flip mapM) os $ \o -> do
+        es <- findUnconsumedTrainEventsForObject o
+        pure $ (o, es)
+      let fstTEs = snd . L.Partial.head $ withPossibleEvents
+      case length fstTEs == length os &&  length (L.nub (map (map eventId . snd) withPossibleEvents)) == 1 of
+        _ -> do
+          when (length fstTEs < 7) $ do
+            void $ (flip mapM) withPossibleEvents $ \(o, es) -> do
+              traceM "\n\n"
+              traceShowM o
+              mapM debugBuildEvent es
+         --error "FOUND ONE!"
+
+        --False -> pure ()
+
+
+
+
+
+
     assignBasedOnTrainOrders :: Object -> Sim ()
     assignBasedOnTrainOrders o = do
       possibleEvents <- findUnconsumedTrainEventsForObject o
@@ -656,7 +702,7 @@ linkUnitsToTrainCommands forceConsumeEvents = do
               void $ updateEvent $ setEventConsumedWithUnit e (unitId . asUnit $ o')
               --void $ updateObject $ setUnitTrainEvent o'' $ Just (eventId e)
 
-            (False, (e:_)) -> do
+            (False, (_e:_)) -> do
                -- we can't find the specific event, but maybe we can assign some info
                let possiblePlayers = L.nub . catMaybes $ map eventPlayerResponsible possibleEvents
                    possibleTypes = L.nub $ map eventTrainUnitObjectType possibleEvents
@@ -664,13 +710,13 @@ linkUnitsToTrainCommands forceConsumeEvents = do
                        [p] -> updateObjectWithPlayerIfNone o p
                        _ -> pure o
 
-               o'' <- case possibleTypes of
+               _o'' <- case possibleTypes of
                       [ot] -> updateObject $ setObjectType o' ot
                       _ -> updateWithObjectTypes o' (nonEmptyPartial possibleTypes)
                case (possiblePlayers, possibleTypes) of
                  ([_], [_]) -> do
                   -- we only have one type of train event and one player so we can try assigning this to the earliest matching train event. This doesn't always work though, as it may leave some later units in a state where they have no possible train events, because this unit consumed it by mistake . We should allow fo this above
-                  linkUnitToEvent o'' e
+                  --linkUnitToEvent o'' e
                   pure ()
                  _ -> pure ()
             _ -> pure ()

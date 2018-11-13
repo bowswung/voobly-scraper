@@ -70,7 +70,9 @@ import Data.Mgz.Deserialise
 import Data.Mgz.Constants
 import Data.Mgz.Utils
 
-newtype EventId = EventId {eventIdToInt :: Int} deriving (Show, Eq, Ord) -- sequence
+newtype EventId = EventId {eventIdToInt :: Int} deriving (Show, Eq, Ord, Generic) -- sequence
+instance Hashable EventId
+
 
 newtype ObjectUnit = ObjectUnit Object -- just for the types
 newtype UnitId = UnitId ObjectId deriving (Show, Eq, Ord)

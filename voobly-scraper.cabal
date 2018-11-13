@@ -70,7 +70,8 @@ library
     base16-bytestring,
     text-format,
     binary-parsers,
-    human-readable-duration
+    human-readable-duration,
+    split
 
   hs-source-dirs:      src
   ghc-options:         -Wall

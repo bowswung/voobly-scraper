@@ -178,6 +178,7 @@ data EventTrain = EventTrain {
   eventTrainType :: ObjectType,
   eventTrainNumber :: Int,
   eventTrainUnit :: Maybe UnitId,
+  eventTrainPossibleUnits :: Maybe (NonEmpty UnitId),
   eventTrainConsumeWithUnit :: Maybe UnitId
 }  deriving (Show, Eq, Ord)
 

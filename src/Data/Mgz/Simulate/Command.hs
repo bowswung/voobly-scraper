@@ -197,6 +197,7 @@ instance RunCommand CommandTrain where
       , eventTrainType = commandTrainUnitType
       , eventTrainNumber = commandTrainNumber
       , eventTrainUnit = Nothing
+      , eventTrainPossibleUnits = Nothing
       , eventTrainConsumeWithUnit = Nothing
       }
 instance RunCommand CommandStop where

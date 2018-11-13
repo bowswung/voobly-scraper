@@ -41,6 +41,14 @@ eventObjectIdAssignmentIdx Event{..} =
     EventTypeBuild b -> map EventObjectIdAssignmentIdx $ eventAssignObjectIds ++ catMaybes [fmap toObjectId $ eventBuildBuilding b]
     _ -> map EventObjectIdAssignmentIdx $ eventAssignObjectIds
 
+
+newtype EventHighestObjectIdReferencedIdx = EventHighestObjectIdReferencedIdx ObjectId deriving (Eq, Ord, Show)
+eventHighestObjectIdReferencedIdx :: Event -> Maybe EventHighestObjectIdReferencedIdx
+eventHighestObjectIdReferencedIdx e =
+  case L.reverse . L.sort $ eventReferencesObjectIdx e of
+    (ReferencesObjectIdx o):_ -> Just . EventHighestObjectIdReferencedIdx $ o
+    _ -> Nothing
+
 -- this is basically the same as EventObjectIdAssignmentIdx at the moment
 newtype EventBuildLinkedBuildingIdx = EventBuildLinkedBuildingIdx BuildingId deriving (Eq, Ord, Show)
 
@@ -116,6 +124,7 @@ makeSimpleIxSet "EventSet" ''Event ['eventId
                                    , 'eventPlayerResponsible
                                    , 'eventReferencesObjectIdx
                                    , 'eventObjectIdAssignmentIdx
+                                   , 'eventHighestObjectIdReferencedIdx
                                    , 'eventTrainedObjectTypeIdx
                                    , 'eventTickIdx
                                    , 'eventBuildLinkedBuildingIdx
