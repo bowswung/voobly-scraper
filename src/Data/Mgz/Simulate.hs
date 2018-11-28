@@ -35,6 +35,7 @@ TODO
   - player civs - restrictions have to run with reference to a civ and a version (for balance changes)
   - team games (player teams)
   - refactor all the awful object type lists into (indexed?) vectors if used directly (like in the main setObjectRestrict function)
+  - add an independent set that gives bounds on creation time for object ids and use it rather than the crude assignobjectids and so forth
   - allow object player ids to change based on conversions etc (and add a separate event for when a monk primaries another unit (heal/convert))
   - come up with a flexible model for time and place (ranges for both basically)
   - integrate train times

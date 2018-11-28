@@ -457,12 +457,12 @@ matchPlayerTempFile m p = tempDir <> "/" <> show (matchIdToInt . matchId $ m) <>
 
 matchPlayerRecordingFile :: Match -> MatchPlayer -> Player -> Civilisation -> AppM FilePath
 matchPlayerRecordingFile m mp p c = do
-  opDetail <- opponentDetailForFile m mp
+  (opDetail, opCiv) <- opponentDetailForFile m mp
   pure $ matchPlayerRecordingDir m mp p <> "/" <> "rec." <>
     matchDateForFile m <> "_" <>
     playerNameForFile p <> "-" <> opDetail <> "_" <>
     mapDetailForFile m <> "_" <>
-    civDetailForFile c <> "_" <>
+    civDetailForFile c <> opCiv <> "_" <>
     gameVersionDetailForFile m <> "_" <>
     show (matchIdToInt . matchId $ m) <>
     ".mgz"
@@ -480,21 +480,22 @@ gameVersionDetailForFile m = T.unpack $ T.intercalate "-" $
 matchDateForFile :: Match -> String
 matchDateForFile = formatTime defaultTimeLocale "%_Y%m%d-%H%M%S" . matchDate
 
-opponentDetailForFile :: Match -> MatchPlayer -> AppM String
+opponentDetailForFile :: Match -> MatchPlayer -> AppM (String, String)
 opponentDetailForFile Match{..} mp = do
   let nePlayers = filter (not . isMatchPlayerError) matchPlayers
   case filter ((/=) (matchPlayerPlayerId mp) . matchPlayerPlayerId) nePlayers of
     [x] -> do
       p <- throwIfNothing (matchPlayerPlayerId x) $ query' $ GetPlayer (matchPlayerPlayerId x)
-      pure $ "vs-" <> playerNameForFile p
+      civ <- throwIfNothing (matchPlayerCiv x) $  query' $ GetCivilisation  (matchPlayerCiv x)
+      pure $ ("vs-" <> playerNameForFile p, "-vs-" <> civDetailForFile civ)
     _ -> do
       let teams = L.nub $ map matchPlayerTeam nePlayers
       if length teams == length nePlayers
-        then pure $ "ffa"
+        then pure $ ("ffa", "")
         else do
           let teamsToRender = matchPlayerTeam mp : filter ((/=) (matchPlayerTeam mp)) teams
               teamsRendered = map (\t-> show $ length (filter ((==) t . matchPlayerTeam) nePlayers)) teamsToRender
-          pure $ L.intercalate "vs" teamsRendered
+          pure $ (L.intercalate "vs" teamsRendered, "")
 
 
 mapDetailForFile :: Match -> String
