@@ -1,5 +1,5 @@
 # Voobly aoe scraper
-This is a simple scraper for pulling in match data from voobly
+This is a simple scraper for pulling in match data from Voobly.
 
 ## Data
 
@@ -46,7 +46,7 @@ The rating of the player on the relevant ladder before the match
 The rating of the player on the relevant ladder after the match
 
 ## Civ ids
-These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. This seems to be due to a use of incompatible mods (WK with UP 1.4 for example). We label these civs as "VooblyCivError"
+These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. This seems to be due to a use of incompatible mods (WK with UP 1.4 for example). These civs are labelled as "VooblyCivError".
 
 | Id | Name |
 | --- | --- |
@@ -96,5 +96,5 @@ These are the same as the ids Voobly uses to display civ images. Voobly has some
 
 
 ## Installation
-Install stack
+Install stack  
 Install tidy (sudo apt-get install tidy)
