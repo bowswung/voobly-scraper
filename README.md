@@ -45,6 +45,8 @@ Whether or not this player was a match winner (coded as 1 = Winner, 0 = Not winn
 The rating of the player on the relevant ladder before the match
 ### MatchPlayerPostRating
 The rating of the player on the relevant ladder after the match
+### MatchPlayerRecording
+URL to recording for this match. Voobly does not keep recordings for long, so these will only work for a few months after the match has been played.
 
 ## Civ ids
 These are the same as the ids Voobly uses to display civ images. Voobly has some errors here, and uses civ ids for which it doesn't have a picture or any information. This seems to be due to a use of incompatible mods (WK with UP 1.4 for example). These civs are labelled as "VooblyCivError".
