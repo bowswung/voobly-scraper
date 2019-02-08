@@ -38,6 +38,7 @@ import qualified Text.HTML.Tree       as P
 import qualified Data.Csv as Csv
 
 import qualified RIO.List as L
+--import qualified RIO.List.Partial as L.Partial
 
 import qualified Data.IxSet.Typed as IxSet
 import Text.Regex.Posix ((=~))
@@ -333,6 +334,12 @@ resetMatchStatusForMissingPlayers = do
   logInfo $ "Resetting " <> displayShow (HM.size matching) <> " match ids"
   void $ (flip mapM) (HM.keys matching) $ \mid -> do
     update' $ UpdateMatchId mid MatchFetchStatusUntried
+
+
+toMonth :: UTCTime -> String
+toMonth t =
+  let (y, m, _) = toGregorian . utctDay $ t
+  in (show y ++ "-" ++ show m)
 
 
 

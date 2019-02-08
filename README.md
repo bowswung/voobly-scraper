@@ -10,6 +10,7 @@ This repo also contains data obtained from running this scraper. Releases of dat
 | 20180504 | [matchDump.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180504/matchDump.zip) | 648641 matches | RM 1v1, RM Team | 57MB / 404MB |
 | 20180507 | [matchDumpDMOnly.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20180507/matchDumpDMOnly.zip) | 27290 matches | DM 1v1, DM Team | 3MB / 48MB |
 | 20181027 | [matchDump.csv.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20181027/matchDump.csv.zip) | 512486 matches | RM 1v1, RM Team, DM 1v1, DM Team | 78MB / 402MB |
+| 20190208 | [matchDump.csv.zip](https://github.com/bowswung/voobly-scraper/raw/master/data/MatchData/20190208/matchDump.csv.zip) | 345891 matches | RM 1v1, RM Team, DM 1v1, DM Team | 49MB / 261MB |
 
 ## Data structure
 For the sake of simplicity the data are provided in csv format, with one row per player per match, and the following columns. For some matches Voobly does not have the data for one or more players, and in these cases all of the MatchPlayer values are filled in with "*VooblyErrorPlayerNotFound*".
