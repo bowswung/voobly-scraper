@@ -101,3 +101,6 @@ These are the same as the ids Voobly uses to display civ images. Voobly has some
 ## Installation
 Install stack  
 Install tidy (sudo apt-get install tidy)
+
+## Running
+The scraper can take a *long* time to run the first time (multiple days). After the first run, subsequent runs should be a lot faster (a few hours) because it will have cached a lot of the data required.
